@@ -502,6 +502,8 @@ class Player:
                         self.anchor(float(pos))
                 self.status()
         finally:
+            for s in (signal.SIGHUP, signal.SIGTERM):              # a closing terminal hangs up more than once:
+                signal.signal(s, signal.SIG_IGN)                    # a second signal must not cut the cleanup short
             self.frames.stop()
             if self.audio:
                 self.audio.close()

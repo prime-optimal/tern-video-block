@@ -8,6 +8,7 @@ import os
 import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -146,24 +147,26 @@ def test_the_terminals_size_reports_set_the_new_size_and_never_act_as_keys():
     assert p.key(b"q") is False
 
 
-def _geometry_through_a_pty(answers):
-    """term_geometry() in a fresh Python on a pseudo-terminal whose other end answers the queries with `answers`
-    ({query: reply}); its result. A new process, not a fork: forking the threaded test process can deadlock the child."""
+def _on_a_pty(code, answers, env=None, until=None):
+    """Runs `code` in a fresh Python on a pseudo-terminal whose other end answers the terminal's queries with `answers`
+    ({query: reply}, each once), until the output matches `until` or the program ends; (output, exit code). A new
+    process, not a fork: forking the threaded test process can deadlock the child."""
     import pty
     master, slave = pty.openpty()
-    code = ("import json, os\nimport tern_video_block as TVB\n"
-            "os.write(1, ('GEOM' + json.dumps(TVB.term_geometry(timeout=1.0)) + '\\n').encode())\n")
     proc = subprocess.Popen([sys.executable, "-c", code], stdin=slave, stdout=slave, stderr=subprocess.DEVNULL,
-                            cwd=os.path.dirname(os.path.abspath(TVB.__file__)), start_new_session=True)
+                            cwd=os.path.dirname(os.path.abspath(TVB.__file__)), start_new_session=True,
+                            env={**os.environ, **(env or {})})
     os.close(slave)
     buf, done, deadline = b"", set(), time.monotonic() + 15
     try:
-        while time.monotonic() < deadline and not re.search(rb"GEOM.*\n", buf):
+        while time.monotonic() < deadline and not (until and re.search(until, buf)):
             ready, _, _ = select.select([master], [], [], 0.05)
             if not ready:
+                if proc.poll() is not None:
+                    break
                 continue
             try:
-                chunk = os.read(master, 1024)
+                chunk = os.read(master, 4096)
             except OSError:                                               # the child exited: the pty is closed
                 break
             if not chunk:
@@ -174,16 +177,40 @@ def _geometry_through_a_pty(answers):
                     os.write(master, a)
                     done.add(q)
     finally:
-        if proc.poll() is None:
+        if proc.poll() is None and until:
             proc.kill()
-        proc.wait()
+        code = proc.wait(timeout=15)
         os.close(master)
-    m = re.search(rb"GEOM(.*?)\r?\n", buf)
-    assert m, buf
+    return buf, code
+
+
+TERN_ANSWERS = {b"\x1b[18t": b"\x1b[8;41;99t", b"\x1b[16t": b"\x1b[6;16;8t"}   # what Tern answers for a 99x41 pane
+
+
+def _geometry(answers):
+    code = ("import json, os\nimport tern_video_block as TVB\n"
+            "os.write(1, ('GEOM' + json.dumps(TVB.term_geometry(timeout=1.0)) + '\\n').encode())\n")
+    out, _ = _on_a_pty(code, answers, until=rb"GEOM.*\n")
+    m = re.search(rb"GEOM(.*?)\r?\n", out)
+    assert m, out
     return json.loads(m.group(1))
 
 
 def test_the_terminal_size_comes_from_its_answers_and_a_silent_terminal_gives_none():
-    g = _geometry_through_a_pty({b"\x1b[18t": b"\x1b[8;41;99t", b"\x1b[16t": b"\x1b[6;16;8t"})
-    assert g == {"rows": 41, "cols": 99, "cell_h": 16, "cell_w": 8}       # what Tern answers for a 99x41 pane
-    assert _geometry_through_a_pty({}) is None                           # no answer: no size
+    assert _geometry(TERN_ANSWERS) == {"rows": 41, "cols": 99, "cell_h": 16, "cell_w": 8}
+    assert _geometry({}) is None                                         # no answer: no size
+
+
+@needs_ff
+def test_a_terminal_that_hangs_up_twice_does_not_leave_the_frames_behind(tmp_path):
+    clip, run_dir = tmp_path / "c.mp4", tmp_path / "run"
+    _clip(clip, 64, 36)
+    run_dir.mkdir()
+    # Every stop of the decoder hangs up: the first, as playback starts, ends the player; the next comes during its
+    # cleanup, as a closing terminal's second SIGHUP does (kitty sends one, the kernel another when the pty closes).
+    code = ("import os, signal, sys, time\nimport tern_video_block as TVB\nstop = TVB._Frames.stop\n"
+            "def hang_up(self):\n    stop(self)\n    os.kill(os.getpid(), signal.SIGHUP)\n    time.sleep(0.2)\n"
+            f"TVB._Frames.stop = hang_up\nsys.exit(TVB.main(['--no-sound', {str(clip)!r}]))\n")
+    _, status = _on_a_pty(code, TERN_ANSWERS, env={"XDG_RUNTIME_DIR": str(run_dir)})
+    assert status == 128 + signal.SIGHUP                                  # the first hangup ended it
+    assert os.listdir(run_dir) == []                                      # the second did not stop the cleanup
