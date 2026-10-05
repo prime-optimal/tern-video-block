@@ -1,5 +1,5 @@
-"""tern-video-block: video files played in a terminal through the kitty graphics protocol (Tern, kitty, WezTerm, Ghostty),
-with their sound.
+"""tern-video-block: video files played in a terminal through the kitty graphics protocol (made for Tern; tested there
+only), with their sound.
 
 Every file given plays side by side in one picture, at one height, fitted into the pane and centred to the pixel, in
 sync and looping, with the first file's sound; the bottom row is a status line with the time, the frame, the chapter
@@ -535,8 +535,8 @@ def open_in_tern(argv, where):
     return block
 
 
-HELP = """Play video files in this terminal through the kitty graphics protocol (Tern, kitty, WezTerm, Ghostty): every file
-side by side, in sync, looping, with the first file's sound; a status line with the time, the frame and the chapter.
+HELP = """Play video files in this terminal through the kitty graphics protocol (made for Tern): every file side by side, in
+sync, looping, with the first file's sound; a status line with the time, the frame and the chapter.
 
 Keys: space play / pause, left / right 5 s (shift: 1 s), . and , one frame on / back (pausing), PgUp / PgDn the previous /
 next chapter, Home or 0 the start, 1 2 3 speed 0.25x / 0.5x / 1x, m mute, q quit.

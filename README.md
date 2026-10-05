@@ -4,8 +4,8 @@ Video files in [Tern](https://stencil.so/tern) open in a video block: the video 
 fitted and centred in the pane, frame by frame if you like. Give it several files and they play side by side, in sync
 (a 16:9 and a 9:16 cut of the same video, two takes, before and after).
 
-It is a Tern plugin plus a small player. The player draws through the kitty graphics protocol, so on its own it also
-runs in kitty, WezTerm and Ghostty.
+It is a Tern plugin plus a small player that draws through the kitty graphics protocol (frames sent by file path), so
+other terminals that implement the protocol may run the player too; it is tested in Tern only.
 
 ## Install
 
