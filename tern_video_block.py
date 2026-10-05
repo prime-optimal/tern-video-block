@@ -191,14 +191,17 @@ def _die_with_parent():
 
 
 class _Audio:
-    """mpv playing the first file's sound, driven over its JSON IPC socket; its position is the clock."""
+    """mpv playing the first file's sound, driven over its JSON IPC socket; its position is the clock. It stays open at
+    the end of the file without pausing (a pause there would outlast the loop back to the start), and it reads no mpv
+    configuration or scripts (resume files, media-key scripts), so only the player moves it."""
 
     def __init__(self, path, sock_path):
         self.path, self.rid, self.buf = sock_path, 0, b""
-        self.proc = subprocess.Popen(["mpv", "--no-video", "--no-terminal", "--really-quiet", "--pause",
-                                      "--keep-open=yes", "--audio-display=no", f"--input-ipc-server={sock_path}",
-                                      str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, preexec_fn=_die_with_parent)
+        self.proc = subprocess.Popen(["mpv", "--no-config", "--load-scripts=no", "--no-video", "--no-terminal",
+                                      "--really-quiet", "--pause", "--keep-open=yes", "--keep-open-pause=no",
+                                      "--audio-display=no", f"--input-ipc-server={sock_path}", str(path)],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     preexec_fn=_die_with_parent)
         self.sock = None
         for _ in range(150):                                      # up to 3 s for mpv to open its socket
             try:
@@ -320,6 +323,17 @@ class Player:
     def anchor(self, t):
         self.t_media, self.t_wall = t, time.monotonic()
 
+    def sync_to_sound(self):
+        """Every half second: the clock follows the sound's position when they drift apart, until mpv has read the
+        sound to its end (eof-reached, a moment before the last of it plays): from there the clock goes on by itself,
+        so a file whose sound is shorter than its picture does not freeze where the sound stops."""
+        if self.audio is None or time.monotonic() < self.next_sync:
+            return
+        self.next_sync = time.monotonic() + 0.5
+        pos = self.audio.get("time-pos")
+        if isinstance(pos, (int, float)) and abs(pos - self.now()) > 0.04 and self.audio.get("eof-reached") is False:
+            self.anchor(float(pos))
+
     # ---- the terminal
     def out(self, s):
         os.write(self.fd_out, s.encode() if isinstance(s, str) else s)
@@ -375,6 +389,7 @@ class Player:
         self.anchor(t)
         if self.audio:
             self.audio.send("seek", t, "absolute+exact")
+            self.audio.send("set_property", "pause", self.paused)          # the sound plays exactly when we do
         self.status(force=True)
 
     def set_paused(self, p):
@@ -507,11 +522,7 @@ class Player:
                         break
                 if data is not None:
                     self.show(data)
-                if self.audio and time.monotonic() >= self.next_sync:
-                    self.next_sync = time.monotonic() + 0.5
-                    pos = self.audio.get("time-pos")
-                    if isinstance(pos, (int, float)) and abs(pos - self.now()) > 0.04:
-                        self.anchor(float(pos))
+                self.sync_to_sound()
                 self.status()
         finally:
             for s in (signal.SIGHUP, signal.SIGTERM):              # a closing terminal hangs up more than once:

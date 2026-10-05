@@ -20,6 +20,8 @@ import tern_video_block as TVB
 
 needs_ff = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
                               reason="ffmpeg / ffprobe not available")
+needs_mpv = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("mpv") is None,
+                               reason="ffmpeg / mpv not available")
 
 
 def _clip(path, w, h, lum="16+N*7", rate=30, args=()):
@@ -146,6 +148,45 @@ def test_playback_keeps_to_the_range_on_whole_frames():
     assert started == [31 / 30, 59 / 30, 45 / 30]       # the first frame from 1.01 s; the last starting before 2 s
     with pytest.raises(TVB.PlayError, match="no frame"):
         TVB.Player([ITEM], start=1.01, end=1.02)                             # between frames 30 and 31: none
+
+
+@needs_mpv
+def test_the_sound_plays_on_when_the_loop_goes_back_after_its_end(tmp_path, monkeypatch):
+    clip = tmp_path / "tone.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=30:d=1", "-f",
+                    "lavfi", "-i", "sine=frequency=440:duration=1", "-shortest", "-c:v", "libx264", "-c:a", "aac",
+                    str(clip)], check=True)
+    popen = subprocess.Popen                                                 # muted: nothing to hear
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: popen([argv[0], "--mute=yes", *argv[1:]], **kw))
+    sound = TVB._Audio(str(clip), str(tmp_path / "mpv.sock"))
+    try:
+        sound.send("set_property", "pause", False)                           # the 1 s tone from its start
+        deadline = time.monotonic() + 5
+        while sound.get("eof-reached") is not True and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if sound.get("current-ao") in (None, "null"):
+            pytest.skip("no audio output: mpv pauses at the end of a file only when it plays to one")
+        time.sleep(0.6)                                                      # past the last of the sound
+        sound.send("seek", 0.0, "absolute+exact")                            # the loop goes back to the start
+        time.sleep(0.4)
+        assert sound.get("pause") is False and 0.15 < sound.get("time-pos") < 0.9   # and it plays on from there
+    finally:
+        sound.close()
+
+
+def test_the_clock_follows_the_sound_until_the_sound_has_ended():
+    p = _player([])
+    p.paused = False
+    sound = {"time-pos": 1.0, "eof-reached": False}
+    p.audio = types.SimpleNamespace(get=lambda prop, timeout=0.2: sound[prop])
+    p.anchor(2.0)
+    p.sync_to_sound()
+    assert p.now() == pytest.approx(1.0, abs=0.02)                           # drifted apart: back to the sound
+    sound["eof-reached"] = True                                              # the sound stopped at 1 s
+    p.anchor(2.0)
+    p.next_sync = 0.0
+    p.sync_to_sound()
+    assert p.now() == pytest.approx(2.0, abs=0.02)                           # the picture goes on by itself
 
 
 def test_the_terminals_size_reports_set_the_new_size_and_never_act_as_keys():
