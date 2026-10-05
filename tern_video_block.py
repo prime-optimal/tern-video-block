@@ -287,11 +287,18 @@ class _Frames:
 
 class Player:
     """The terminal player: run() until q. `items` are probe() results; the first sets the frame rate, the length and
-    the sound; `chapters` are [{name, from, to}]; frames are numbered from `first_frame`."""
+    the sound; `chapters` are [{name, from, to}]; frames are numbered from `first_frame`. Playback keeps to the range
+    from `start` to `end` (seconds; default the whole file), looping, or played `once` and then done."""
 
-    def __init__(self, items, chapters=(), first_frame=0, sound=True, paused=False):
+    def __init__(self, items, chapters=(), first_frame=0, sound=True, paused=False, start=0.0, end=None, once=False):
         self.items, self.chapters = items, list(chapters)
         self.fps, self.duration = float(items[0]["fps"]), float(items[0]["duration"])
+        self.start = min(max(float(start), 0.0), self.duration)
+        self.end = self.duration if end is None else min(max(float(end), 0.0), self.duration)
+        self.once = once
+        first, last = self.frame_range()
+        if first > last:
+            raise PlayError(f"no frame between {self.start:g} s and {self.end:g} s")
         self.first_frame = int(first_frame)
         self.sound = sound and items[0]["audio"]
         self.silent_note = ""
@@ -353,10 +360,13 @@ class Player:
         self.out(f"\x1b_Ga=d,d=I,i={KITTY_ID},q=2\x1b\\\x1b[2J")
 
     # ---- moving about
+    def frame_range(self):
+        """The range's first and last frames: the first starting at or after `start`, the last starting before `end`."""
+        return math.ceil(self.start * self.fps - 1e-6), math.ceil(self.end * self.fps - 1e-6) - 1
+
     def seek(self, t):
-        last = max(self.duration - 1.0 / self.fps, 0.0)
-        t = min(max(t, 0.0), last)
-        k = int(math.floor(t * self.fps + 1e-6))
+        first, last = self.frame_range()
+        k = min(max(int(math.floor(t * self.fps + 1e-6)), first), last)
         t = k / self.fps
         self.frames.start(self.lay, t)
         data = self.frames.read()
@@ -373,8 +383,8 @@ class Player:
         self.anchor(t)
         if self.audio:
             self.audio.send("set_property", "pause", p)
-        if not p and t >= self.duration - 1.0 / self.fps:
-            self.seek(0.0)
+        if not p and t >= self.end - 1.0 / self.fps:
+            self.seek(self.start)
         self.status(force=True)
 
     def jump_chapter(self, d):
@@ -421,7 +431,7 @@ class Player:
             elif s in (b"\x1b[5~", b"\x1b[6~"):
                 self.jump_chapter(-1 if s == b"\x1b[5~" else 1)
             elif s in (b"\x1b[H", b"\x1b[1~", b"0"):
-                self.seek(0.0)
+                self.seek(self.start)
             elif s.decode("latin-1") in SPEEDS:
                 t = self.now()
                 self.speed = SPEEDS[s.decode()]
@@ -461,7 +471,7 @@ class Player:
                     self.audio = _Audio(self.items[0]["path"], os.path.join(self.frame_dir, "mpv.sock"))
             want_paused = self.paused
             self.paused = True
-            self.seek(0.0)
+            self.seek(self.start)
             if not want_paused:
                 self.set_paused(False)
             while True:
@@ -485,8 +495,10 @@ class Player:
                     self.status()
                     continue
                 t = self.now()
-                if t >= self.duration - 0.5 / self.fps:            # the end: round again
-                    self.seek(0.0)
+                if t >= self.end - 0.5 / self.fps:                 # the end of the range: done, or round again
+                    if self.once:
+                        break
+                    self.seek(self.start)
                     continue
                 data = None
                 while self.frames.next_time() <= t:                # late frames are skipped, the newest shown
@@ -547,6 +559,7 @@ Examples:
   tern-video-block clip.mp4
   tern-video-block --split right wide.mp4 tall.mp4          # a new Tern block beside this pane, focused
   tern-video-block --chapters shots.ffmeta --first-frame 61 cut.mp4
+  tern-video-block --end 5 --once a.mp4 && tern-video-block --end 5 --once b.mp4    # the first 5 s of each, in turn
 """
 
 
@@ -557,6 +570,9 @@ def main(argv=None):
     p.add_argument("--first-frame", type=int, default=0, metavar="N", help="the number of the first frame (default 0)")
     p.add_argument("--paused", action="store_true", help="open on the first frame, paused (space plays)")
     p.add_argument("--no-sound", action="store_true", help="play without sound")
+    p.add_argument("--start", type=float, default=0.0, metavar="S", help="play from S seconds in (default 0)")
+    p.add_argument("--end", type=float, metavar="S", help="play up to S seconds in (default the end)")
+    p.add_argument("--once", action="store_true", help="play once and quit, instead of looping")
     where = p.add_mutually_exclusive_group()
     where.add_argument("--split", choices=("right", "down"), help="open in a new Tern block beside this pane, focused")
     where.add_argument("--tab", action="store_true", help="open in a new Tern tab")
@@ -573,13 +589,16 @@ def main(argv=None):
             rest += ["--chapters", chapters_file] if chapters_file else []
             rest += ["--paused"] if args.paused else []
             rest += ["--no-sound"] if args.no_sound else []
+            rest += ["--start", repr(args.start)] + (["--end", repr(args.end)] if args.end is not None else [])
+            rest += ["--once"] if args.once else []
             print(json.dumps({"block": open_in_tern(rest, "tab" if args.tab else args.split)}))
             return 0
         if shutil.which("ffmpeg") is None:
             raise PlayError("ffmpeg is not on the PATH")
         items = [probe(f) for f in files]
         chapters = read_chapters(chapters_file) if chapters_file else items[0]["chapters"]
-        Player(items, chapters, args.first_frame, sound=not args.no_sound, paused=args.paused).run()
+        Player(items, chapters, args.first_frame, sound=not args.no_sound, paused=args.paused, start=args.start,
+               end=args.end, once=args.once).run()
     except PlayError as e:
         print(f"tern-video-block: {e}", file=sys.stderr)
         return 2

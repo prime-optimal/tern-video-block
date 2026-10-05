@@ -32,6 +32,7 @@ tern-video-block clip.mp4                                   # plays in this term
 tern-video-block --split right wide.mp4 tall.mp4            # a new Tern block beside this pane, focused
 tern-video-block --tab clip.mp4                             # a new Tern tab
 tern-video-block --chapters shots.ffmeta --first-frame 61 cut.mp4
+tern-video-block --end 5 --once a.mp4 && tern-video-block --end 5 --once b.mp4   # the first 5 s of each, in turn
 ```
 
 | Option | |
@@ -41,6 +42,8 @@ tern-video-block --chapters shots.ffmeta --first-frame 61 cut.mp4
 | `--first-frame N` | the number the status line gives the first frame (default 0), e.g. to match the frame numbers of the project the video was rendered from |
 | `--paused` | open on the first frame, paused |
 | `--no-sound` | play without sound |
+| `--start S`, `--end S` | play only from S seconds in / up to S seconds in (whole frames: the first starting at or after the start, the last starting before the end) |
+| `--once` | play once and quit (the block closes) instead of looping |
 
 The first file sets the frame rate, the length and the sound; the others are brought to its rate and played beside it.
 

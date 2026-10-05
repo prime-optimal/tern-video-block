@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 
@@ -106,9 +107,11 @@ def test_decoding_starts_on_exactly_the_frame_asked_for_and_keeps_a_file_of_anot
         assert abs(_mean(first, w, h, w0 + 2, w - 2) - (luma_b - 16) * 255 / 219) < 3, k
 
 
-def _player(chapters, geom=None):
-    item = {"path": "x.mp4", "w": 64, "h": 36, "fps": 30.0, "duration": 10.0, "audio": False, "chapters": []}
-    p = TVB.Player([item], chapters, first_frame=61, paused=True)
+ITEM = {"path": "x.mp4", "w": 64, "h": 36, "fps": 30.0, "duration": 10.0, "audio": False, "chapters": []}
+
+
+def _player(chapters, geom=None, **options):
+    p = TVB.Player([ITEM], chapters, first_frame=61, paused=True, **options)
     p.geom = geom or {"cols": 80, "rows": 24, "cell_w": 8, "cell_h": 16}
     p.out = lambda s: None                                                   # no terminal
     p.landed = []
@@ -132,6 +135,17 @@ def test_chapter_jumps_visit_every_chapter_in_order_when_chapters_start_between_
     p.jump_chapter(-1)
     p.jump_chapter(-1)
     assert [TVB.chapter_at(chapters, t) for t in p.landed[-2:]] == [3, 2]
+
+
+def test_playback_keeps_to_the_range_on_whole_frames():
+    p = _player([], start=1.01, end=2.0)
+    started = []
+    p.frames = types.SimpleNamespace(start=lambda lay, t: started.append(t), read=lambda: None)
+    for t in (0.0, 9.0, 1.5):                                                # before, after and inside the range
+        TVB.Player.seek(p, t)                                                # the real seek (_player records its own)
+    assert started == [31 / 30, 59 / 30, 45 / 30]       # the first frame from 1.01 s; the last starting before 2 s
+    with pytest.raises(TVB.PlayError, match="no frame"):
+        TVB.Player([ITEM], start=1.01, end=1.02)                             # between frames 30 and 31: none
 
 
 def test_the_terminals_size_reports_set_the_new_size_and_never_act_as_keys():
@@ -177,9 +191,11 @@ def _on_a_pty(code, answers, env=None, until=None):
                     os.write(master, a)
                     done.add(q)
     finally:
-        if proc.poll() is None and until:
+        try:
+            code = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:                             # still running: it hangs (or loops for ever)
             proc.kill()
-        code = proc.wait(timeout=15)
+            code = proc.wait()
         os.close(master)
     return buf, code
 
@@ -214,3 +230,16 @@ def test_a_terminal_that_hangs_up_twice_does_not_leave_the_frames_behind(tmp_pat
     _, status = _on_a_pty(code, TERN_ANSWERS, env={"XDG_RUNTIME_DIR": str(run_dir)})
     assert status == 128 + signal.SIGHUP                                  # the first hangup ended it
     assert os.listdir(run_dir) == []                                      # the second did not stop the cleanup
+
+
+@needs_ff
+def test_once_plays_the_range_and_then_quits_by_itself(tmp_path):
+    clip, run_dir = tmp_path / "c.mp4", tmp_path / "run"
+    _clip(clip, 64, 36)
+    run_dir.mkdir()
+    code = ("import sys\nimport tern_video_block as TVB\n"
+            f"sys.exit(TVB.main(['--end', '0.5', '--once', '--no-sound', {str(clip)!r}]))\n")
+    out, status = _on_a_pty(code, TERN_ANSWERS, env={"XDG_RUNTIME_DIR": str(run_dir)})
+    assert status == 0                                                       # it ended by itself, not killed looping
+    assert out.count(b"\x1b_Ga=T") >= 2                                      # after playing, not at the first frame
+    assert os.listdir(run_dir) == []
