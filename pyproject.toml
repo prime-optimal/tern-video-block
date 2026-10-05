@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tern-video-block"
+dynamic = ["version"]
+description = "Video files played in the terminal through the kitty graphics protocol, with their sound: Tern's video block."
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+tern-video-block = "tern_video_block:main"
+
+[tool.setuptools]
+py-modules = ["tern_video_block"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tern_video_block.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
