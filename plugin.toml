@@ -1,6 +1,6 @@
 schema = 1
 id = "video-block"
-name = "Video block"
+name = "Media block"
 version = "0.1.0"
-description = "Video files open in a video block: played in the terminal with their sound, side by side, frame by frame."
+description = "Video and audio files (wav, mp3, flac, ogg) open in a media block: played in the terminal, video side by side, audio as its own waveform in the pane's colors, zoomed out to the whole track."
 window = "window.luau"
