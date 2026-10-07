@@ -556,6 +556,18 @@ class _Audio:
             os.unlink(self.path)
 
 
+ERR_TAG = re.compile(r"\[[^\]]*\]\s*")                     # ffmpeg's own "[filter @ 0x…] " prefixes
+
+
+def _why(stderr):
+    """The one line of ffmpeg's stderr that says what went wrong with: the tags off, its generic "Error :" tail and
+    the threading noise it prints after a filter has already failed left out."""
+    lines = [ERR_TAG.sub("", l).strip() for l in (stderr or "").splitlines()]
+    lines = [l for l in lines if l and not l.startswith("Error :") and "Task finished with error" not in l
+             and "Terminating thread" not in l]
+    return lines[-1][:200] if lines else ""
+
+
 class _Frames:
     """ffmpeg's frames from a start time: frame k of the run shows at start + k / fps."""
 
@@ -574,12 +586,30 @@ class _Frames:
                                      preexec_fn=_die_with_parent)
 
     def read(self):
-        """The next frame's bytes, or None at the end."""
+        """The next frame's bytes, or None at the end. ffmpeg that stopped before drawing a frame at all (a filter it
+        will not run, a file it will not draw) says so here rather than leaving the pane blank without a word."""
         data = self.proc.stdout.read(self.size)
         if len(data) < self.size:
+            if self.k == 0 and self.proc is not None and self.proc.poll() is not None:
+                name = os.path.basename(str(self.items[0]["path"]))
+                what = "the visualizer drew nothing for" if self.items[0].get("visualization") else "ffmpeg drew nothing for"
+                raise PlayError(f"{what} {name}: {self.why() or 'ffmpeg gave no reason'}")
             return None
         self.k += 1
         return data
+
+    def why(self):
+        """ffmpeg's own words: the same command run again for its first frame alone, which is as long as a graph
+        drawing the sound on a colour of its own would otherwise run for."""
+        item = self.items[0]
+        cmd = (visualize_cmd(item, self.lay, self.start_t, self.fps) if item.get("visualization")
+               else ffmpeg_cmd(self.items, self.lay, self.start_t, self.fps))
+        try:
+            r = subprocess.run([*cmd[:-1], "-frames:v", "1", "-"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return _why(r.stderr.decode("utf-8", "replace"))
 
     def next_time(self):
         return self.start_t + self.k / self.fps

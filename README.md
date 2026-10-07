@@ -89,6 +89,9 @@ visualizers (`--audio-visualizer spectrum`, `cqt`, `vectorscope`, …) draw the 
 Several audio files are a playlist: `n` and `v` move through it, the status line gives the track number, and each
 track's waveform is rendered from its own sound.
 
+What was tried and dropped, what was in the way, and what was measured:
+[docs/audio-visualizations.md](docs/audio-visualizations.md).
+
 ## How it works
 
 ffmpeg decodes the files from the frame asked for, scales each to the picture's height and its own width and stacks

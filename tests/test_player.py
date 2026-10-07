@@ -305,6 +305,24 @@ def test_a_waveform_visualizer_is_a_strip_and_the_other_names_are_graphs():
         TVB._visualizer("showwaves=line'")                                   # ffmpeg's graph syntax has no place for it
 
 
+@needs_ff
+def test_a_visualizer_ffmpeg_will_not_run_says_so_where_the_pane_would_be_blank(tmp_path):
+    track = tmp_path / "tone.flac"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:a", "flac", str(track)], check=True)                  # ffmpeg: a name in neither list is a graph
+    lay = {"w": 64, "h": 36}
+    item = TVB.visualize(TVB.probe(str(track)), lay, TVB._visualizer("nosuchviz"), 30.0)
+    frames = TVB._Frames([item], 30.0)
+    frames.start(lay, 0.0)
+    try:
+        with pytest.raises(TVB.PlayError) as refused:                         # not a pane that draws nothing, in silence
+            frames.read()
+    finally:
+        frames.stop()
+    assert "tone.flac" in str(refused.value)
+    assert "No such filter: 'nosuchviz'" in str(refused.value)                # ffmpeg's own words, tag off
+
+
 def test_a_span_reads_as_seconds_minutes_or_the_whole_track():
     assert TVB.span_name(45, 600) == "45 s"
     assert TVB.span_name(90, 600) == "1m30s"
