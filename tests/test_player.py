@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import types
 
@@ -158,7 +159,8 @@ def test_the_sound_plays_on_when_the_loop_goes_back_after_its_end(tmp_path, monk
                     str(clip)], check=True)
     popen = subprocess.Popen                                                 # muted: nothing to hear
     monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: popen([argv[0], "--mute=yes", *argv[1:]], **kw))
-    sound = TVB._Audio(str(clip), str(tmp_path / "mpv.sock"))
+    sock_dir = tempfile.mkdtemp(prefix="tvb-", dir="/tmp")                   # tmp_path overruns AF_UNIX's 104 bytes
+    sound = TVB._Audio(str(clip), os.path.join(sock_dir, "mpv.sock"))
     try:
         sound.send("set_property", "pause", False)                           # the 1 s tone from its start
         deadline = time.monotonic() + 5
@@ -172,6 +174,7 @@ def test_the_sound_plays_on_when_the_loop_goes_back_after_its_end(tmp_path, monk
         assert sound.get("pause") is False and 0.15 < sound.get("time-pos") < 0.9   # and it plays on from there
     finally:
         sound.close()
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def test_the_clock_follows_the_sound_until_the_sound_has_ended():
