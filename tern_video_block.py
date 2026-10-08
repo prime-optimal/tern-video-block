@@ -16,7 +16,8 @@ queries CSI 18 t (rows and columns) and CSI 16 t (the cell in pixels): the playe
 after, taking the answers out of the keys, and redraws for a new size.
 
 Standard library only; needs ffmpeg and ffprobe, and mpv for the sound.
-Audio files play as tracks through the AudioMixin and BookmarksMixin mixins in tvb_audio and tvb_bookmarks."""
+Audio files play as tracks through the AudioMixin and BookmarksMixin mixins in tvb_audio and tvb_bookmarks; the range,
+cuts, GIFs and the info row come from the CutMixin in tvb_cut."""
 import argparse
 import base64
 import json
@@ -35,6 +36,7 @@ from collections import deque
 
 import tvb_audio
 import tvb_bookmarks
+import tvb_cut
 import tvb_vis
 from tvb_common import PlayError
 
@@ -43,8 +45,8 @@ __version__ = "0.1.0"
 KITTY_ID = 7311                                   # the image the player replaces frame after frame
 KEEP_FRAMES = 30                                  # frame files kept after showing them (the terminal may read late)
 SPEEDS = {"1": 0.25, "2": 0.5, "3": 1.0}
-KEYS = ("space play/pause  \u2190\u2192 5 s  , . frame  PgUp/PgDn chapter  b B [ ] mark  1 2 3 speed  m mute  "
-        "q quit")
+KEYS = ("space play/pause  \u2190\u2192 5 s  , . frame  PgUp/PgDn chapter  \u2191\u2193 file  i o x range  c cut  g gif  "
+        "b B [ ] mark  1 2 3 speed  m mute  q quit")
 SIZE_REPORT = re.compile(rb"\x1b\[(8|6);(\d+);(\d+)t")    # the answers to CSI 18 t (rows, cols) and CSI 16 t (cell px)
 
 
@@ -102,7 +104,7 @@ def probe(path):
         raise PlayError(f"{path}: no duration")
     return {"path": str(path), "w": w, "h": h, "fps": fps, "duration": duration,
             "audio": any(s.get("codec_type") == "audio" for s in streams),
-            "waveform": False, "chapters": _chapters(info.get("chapters", []))}
+            "waveform": False, "chapters": _chapters(info.get("chapters", [])), "info": tvb_cut.describe(info)}
 
 
 def read_chapters(path):
@@ -321,11 +323,11 @@ class _Frames:
             self.proc = None
 
 
-class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
+class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin, tvb_cut.CutMixin):
     """The terminal player: run() until q. `items` are probe() results; the first sets the frame rate, the length and
     the sound; `chapters` are [{name, from, to}]; frames are numbered from `first_frame`. Playback keeps to the range
     from `start` to `end` (seconds; default the whole file), looping, or played `once` and then done. Audio-only files
-    are drawn by their own visualizer (a waveform or a graph); n, v and o navigate the playlist."""
+    are drawn by their own visualizer (a waveform or a graph); n, v and O navigate the playlist, up and down the folder."""
 
     def __init__(self, items, chapters=(), first_frame=0, sound=True, paused=False, start=0.0, end=None, once=False,
                  visualizer=None, bookmarks=None):
@@ -344,13 +346,14 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
         self.fd_in, self.fd_out = 0, 1
         self.serial, self.frame_dir, self.recent = 0, None, deque()
         self.audio, self.wave, self.frames = None, None, _Frames(items, self.fps)
-        self.geom, self.lay = None, None
+        self.geom, self.lay, self.clear_next = None, None, False
         self.old_termios = None
         self.new_geom, self.ask_size_at = None, 0.0          # a size the terminal reported; when to ask again
         self.t_media, self.t_wall = 0.0, time.monotonic()
         self.last_status, self.next_sync = "", 0.0
         self.clock = clock
         self.audio_init(items, visualizer, bookmarks)
+        self.cut_init()
 
     # ---- the clock: media time anchored to the wall clock, re-anchored to the sound now and then
     def now(self):
@@ -368,7 +371,9 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
         if self.audio is None or time.monotonic() < self.next_sync:
             return
         self.next_sync = time.monotonic() + 0.5
-        pos = self.audio.get("time-pos")
+        pos = self.audio.get("audio-pts")                          # time-pos moves in half-second steps with no video
+        if not isinstance(pos, (int, float)):
+            pos = self.audio.get("time-pos")
         if isinstance(pos, (int, float)) and abs(pos - self.now()) > 0.04 and self.audio.get("eof-reached") is False:
             self.anchor(float(pos))
 
@@ -377,6 +382,10 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
         os.write(self.fd_out, s.encode() if isinstance(s, str) else s)
 
     def show(self, data):
+        clear = "\x1b[2J" if self.clear_next else ""             # the old text goes with the picture replaced
+        if clear:
+            self.clear_next = False
+            self.last_status, self.last_marks, self.last_info = "", None, None
         self.serial += 1
         path = os.path.join(self.frame_dir, f"{self.serial}.rgb")
         with open(path, "wb") as fh:
@@ -388,11 +397,12 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
             except FileNotFoundError:
                 pass
         lay = self.lay
-        self.out(f"\x1b[{lay['row'] + 1};{lay['col'] + 1}H\x1b_Ga=T,t=f,f=24,s={lay['w']},v={lay['h']},i={KITTY_ID},"
+        self.out(f"{clear}\x1b[{lay['row'] + 1};{lay['col'] + 1}H\x1b_Ga=T,t=f,f=24,s={lay['w']},v={lay['h']},i={KITTY_ID},"
                  f"p=1,X={lay['X']},Y={lay['Y']},C=1,q=2;{base64.b64encode(path.encode()).decode()}\x1b\\")
 
     def status(self, force=False):
         self.draw_marks(force)
+        self.draw_info(force)
         t = self.now()
         k = chapter_at(self.chapters, t)
         icon = "\u275a\u275a" if self.paused else "\u25b6"
@@ -404,27 +414,33 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
         length = round(self.duration)
         text = (f" {icon} {clock(t, length)} / {clock(length, length)}{frame}{chapter}{speed}{track}{span}"
                 f"{self.silent_note}    {keys}")
-        text = text[: self.geom["cols"] - 1]
+        text = tvb_cut.fit(text, self.geom["cols"] - 1)
         if force or text != self.last_status:
-            self.out(f"\x1b[{self.geom['rows']};1H\x1b[2K\x1b[2m{text}\x1b[0m")
+            self.out(f"\x1b[{self.status_row};1H\x1b[2K\x1b[2m{text}\x1b[0m")
             self.last_status = text
 
     def relayout(self, geom=None):
-        """Lay the picture out for `geom`, else for the size the terminal answers now; clear the pane. A track playing
+        """Lay the picture out for `geom`, else for the size the terminal answers now; the pane is cleared when the next
+        picture replaces the old one (clear_picture clears it now). A track playing
         sound alone (item["waveform"]) is laid out and drawn by AudioMixin (a waveform strip or another visualizer);
         anything else keeps upstream's layout."""
         geom = geom or term_geometry()
         if geom is None:
             raise PlayError("the terminal does not report its size in pixels (CSI 16 t / 18 t)")
         self.geom = geom
-        rows = 2 if self.marks else 1
+        rows = (2 if self.marks else 1) + self.info_rows(geom)
         if self.items[0].get("waveform"):
             self.lay = self.audio_layout(geom, rows, layout)
         else:
             self.wave = None
             self.lay = layout(self.items, geom, rows)
         self.marks_row, self.last_marks = self.marks_rows(self.lay, geom)
+        self.clear_next = True
+
+    def clear_picture(self):
+        """The picture taken down and the pane cleared at once, not with the next picture."""
         self.out(f"\x1b_Ga=d,d=I,i={KITTY_ID},q=2\x1b\\\x1b[2J")
+        self.clear_next = False
 
     # ---- the sound
     def open_audio(self):
@@ -448,13 +464,18 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
         """The range's first and last frames: the first starting at or after `start`, the last starting before `end`."""
         return math.ceil(self.start * self.fps - 1e-6), math.ceil(self.end * self.fps - 1e-6) - 1
 
-    def seek(self, t):
+    def seek(self, t, resync=True):
+        """Show the frame at t and move the clock and the sound there; without `resync` only the picture is drawn anew
+        at t (a resize: the clock and the sound go on undisturbed)."""
         first, last = self.frame_range()
         k = min(max(int(math.floor(t * self.fps + 1e-6)), first), last)
         t = k / self.fps
         data = self.picture(t)
         if data is not None:
             self.show(data)
+        if not resync:
+            self.status(force=True)
+            return
         self.anchor(t)
         if self.audio:
             self.audio.send("seek", t, "absolute+exact")
@@ -500,7 +521,7 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
                 g["cell_h"], g["cell_w"] = a, b
             if min(g.values()) > 0 and g != self.geom:
                 self.new_geom = g
-        seqs = re.findall(rb"\x1b\[[0-9;:?<=>]*[A-Za-z~]|\x1b.|.", SIZE_REPORT.sub(b"", data), re.S)
+        seqs = re.findall(rb"\x1b\[[0-9;:?<=>]*[A-Za-z~]|\x1bO[A-Za-z]|\x1b.|.", SIZE_REPORT.sub(b"", data), re.S)
         for s in seqs:
             if s in (b"q", b"Q", b"\x03", b"\x1b"):
                 return False
@@ -526,7 +547,7 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
             elif s in (b"m", b"M") and self.audio:
                 self.audio.send("cycle", "mute")
             else:
-                self.audio_key(s) or self.mark_key(s)
+                self.audio_key(s) or self.mark_key(s) or self.cut_key(s)
         return True
 
     # ---- the loop
@@ -550,7 +571,7 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
             tty.setraw(self.fd_in)
             self.theme_colors()
             self.title()
-            self.out("\x1b[?1049h\x1b[?25l\x1b[2J")
+            self.out("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J")
             self.load_marks()
             self.relayout()
             self.open_audio()
@@ -566,12 +587,12 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
                 if self.new_geom:
                     t, geom, self.new_geom = self.now(), self.new_geom, None
                     self.relayout(geom)
-                    self.seek(t)
+                    self.seek(t, resync=False)
                 timeout = 0.25 if self.paused else max(0.0, self.next_frame_in() / self.speed)
                 ready, _, _ = select.select([self.fd_in], [], [], min(timeout, 0.25))
                 if ready:
                     data = os.read(self.fd_in, 256)
-                    while re.search(rb"\x1b(\[[0-9;]*)?$", data) and select.select([self.fd_in], [], [], 0.05)[0]:
+                    while re.search(rb"\x1b(\[[0-9;]*|O)?$", data) and select.select([self.fd_in], [], [], 0.05)[0]:
                         data += os.read(self.fd_in, 256)          # the rest of a sequence the read cut off
                     if not self.key(data):
                         break
@@ -608,7 +629,7 @@ class Player(tvb_audio.AudioMixin, tvb_bookmarks.BookmarksMixin):
             if self.frame_dir:
                 shutil.rmtree(self.frame_dir, ignore_errors=True)
             try:                                                   # the pane may be gone already
-                self.out(f"\x1b_Ga=d,d=I,i={KITTY_ID},q=2\x1b\\\x1b[2J\x1b[?25h\x1b[?1049l")
+                self.out(f"\x1b_Ga=d,d=I,i={KITTY_ID},q=2\x1b\\\x1b[2J\x1b[?7h\x1b[?25h\x1b[?1049l")
                 termios.tcsetattr(self.fd_in, termios.TCSADRAIN, old)
             except (OSError, termios.error):
                 pass
@@ -653,8 +674,14 @@ moving with the sound), so the pane can be zoomed out to the whole track -- no w
 - and = (or cmd+- / cmd+=, where the terminal passes them through) zoom the span out and in; z shows the whole track.
 
 Keys: space play / pause, left / right 5 s (shift: 1 s), . and , one frame on / back (pausing), PgUp / PgDn the previous /
-next chapter, Home or 0 the start, 1 2 3 speed 0.25x / 0.5x / 1x, n and v the next / previous track, o another file
-(fzf, else a typed path), b B [ ] mark, m mute, - and = zoom the waveform out and in, z the whole track, q quit.
+next chapter, up / down the previous / next media file of the folder (opened in place), Home or 0 the start, 1 2 3
+speed 0.25x / 0.5x / 1x, n and v the next / previous track, O another file (fzf, else a typed path), b B [ ] mark, m
+mute, - and = zoom the waveform out and in, z the whole track, q quit.
+
+A range: i sets the in point at this frame's start, o the out point at its end, x clears both (kept per file, in the
+bookmarks database). c cuts the range out of the file without re-encoding, g makes a GIF of it (video; needs gifski).
+Both run in the background, beside the source file, as NAME_0m01.50s-0m04.00s.EXT (never over an existing file); the
+info row under the status line shows the range, the export and what the file is (format, length, codecs, size).
 
 Examples:
   tern-video-block clip.mp4
@@ -685,7 +712,7 @@ def main(argv=None):
                                                               "vectorscope, spectrumpic, or an ffmpeg filtergraph; a "
                                                               "colormap may follow a name, as in cqt:viridis")
     p.add_argument("--bookmarks", metavar="FILE", help="the SQLite database of bookmarks (default: the plugin's own, in "
-                                                       "Tern's plugin data); b adds one, B removes it, [ ] move between")
+                                                       "Tern's plugin data); b adds one, B removes it, [ ] move between; the ranges of i / o live here too")
     where = p.add_mutually_exclusive_group()
     where.add_argument("--split", choices=("right", "down"), help="open in a new Tern block beside this pane, focused")
     where.add_argument("--tab", action="store_true", help="open in a new Tern tab")

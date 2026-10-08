@@ -31,6 +31,8 @@ local BOOKMARKS = tern.plugin.data .. "/bookmarks.db"
 
 -- The video block the last preview opened: the next preview takes its place.
 local preview: number? = nil
+-- How long after a preview opens before the keyboard moves to it (the Files pane's click has finished by then).
+local FOCUS_DELAY_MS = 150
 
 tern.command({
 	id = "open-bookmarks",
@@ -59,16 +61,28 @@ tern.route.open(function(req: OpenRequest, cx: WindowCx): RouteDecision?
 	if req.how == "preview" and preview ~= nil and cx.session:pane(preview) ~= nil then
 		target, old = preview, preview
 	end
+	local pane: number? = nil
 	if req.how == "tab" or target == nil then
-		cx.layout:new_tab(launch, reveal)
-		return { handled = true }
+		pane = cx.layout:new_tab(launch, reveal)
+	else
+		pane = cx.layout:split(target, if req.how == "below" then "down" else "right", launch, reveal)
+		if old ~= nil then
+			pcall(cx.layout.close, cx.layout, old)
+		end
+		if req.how == "preview" then
+			preview = pane
+		end
 	end
-	local pane = cx.layout:split(target, if req.how == "below" then "down" else "right", launch, reveal)
-	if old ~= nil then
-		pcall(cx.layout.close, cx.layout, old)
-	end
-	if req.how == "preview" then
-		preview = pane
+	-- A Files-pane click leaves the keyboard on the Files row once this handler returns (layout:focus moves Tern's
+	-- focused pane, not the keyboard), so space there opens Tern's own file block. A moment later, pass the keyboard
+	-- through the tab list, which gives it up to whatever pane layout:focus then names.
+	if req.origin == "files" and pane ~= nil then
+		tern.timer(FOCUS_DELAY_MS, function(later: WindowCx?)
+			if later ~= nil and later.session:pane(pane) ~= nil then
+				later:command("focus_tabs")
+				later.layout:focus(pane)
+			end
+		end)
 	end
 	return { handled = true }
 end)

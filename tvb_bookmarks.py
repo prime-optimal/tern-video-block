@@ -16,6 +16,11 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS bookmarks (
     created TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (path, at)
 )"""
+RANGES_SCHEMA = """CREATE TABLE IF NOT EXISTS ranges (
+    path TEXT PRIMARY KEY,
+    at_in REAL,
+    at_out REAL
+)"""
 SEP = " \u00b7 "
 
 
@@ -41,6 +46,7 @@ class Bookmarks:
         os.makedirs(os.path.dirname(self.db) or ".", exist_ok=True)
         with contextlib.closing(sqlite3.connect(self.db, timeout=2.0)) as con, con:
             con.execute(SCHEMA)
+            con.execute(RANGES_SCHEMA)                                 # a database made before ranges gets the table
             con.execute(sql, args)
 
     def of(self, path):
@@ -62,6 +68,27 @@ class Bookmarks:
     def remove(self, path, at):
         self._write("DELETE FROM bookmarks WHERE path = ? AND abs(at - ?) < 0.0005",
                     (os.path.realpath(path), float(at)))
+
+    def range_of(self, path):
+        """(at_in, at_out) of the file at `path`: the in and out points of its range, None for one not set."""
+        if not os.path.isfile(self.db):
+            return None, None
+        try:
+            with contextlib.closing(sqlite3.connect(f"file:{self.db}?mode=ro", uri=True, timeout=2.0)) as con:
+                row = con.execute("SELECT at_in, at_out FROM ranges WHERE path = ?",
+                                  (os.path.realpath(path),)).fetchone()
+        except sqlite3.OperationalError:                               # no ranges table yet
+            return None, None
+        return (None, None) if row is None else tuple(None if v is None else float(v) for v in row)
+
+    def set_range(self, path, at_in, at_out):
+        """Remember the range of the file at `path`; with no end set, forget it."""
+        path = os.path.realpath(path)
+        if at_in is None and at_out is None:
+            if os.path.isfile(self.db):
+                self._write("DELETE FROM ranges WHERE path = ?", (path,))
+            return
+        self._write("INSERT OR REPLACE INTO ranges (path, at_in, at_out) VALUES (?, ?, ?)", (path, at_in, at_out))
 
 
 def current(marks, t):
@@ -102,8 +129,9 @@ class BookmarksMixin:
     and mark_key. Uses only self.*; never imports tern_video_block."""
 
     def load_marks(self):
-        """The bookmarks of the file playing, from the store; none without one."""
+        """The bookmarks and the range of the file playing, from the store; none without one."""
         self.marks = self.store.of(self.items[0]["path"]) if self.store else []
+        self.range = self.store.range_of(self.items[0]["path"]) if self.store else (None, None)
 
     def _change_marks(self, write):
         """Write to the store, then show the bookmarks again: the row comes and goes with the first and the last."""
@@ -156,7 +184,7 @@ class BookmarksMixin:
         if not self.marks or not self.geom:
             return
         length = round(self.duration)
-        before, mid, after = row(self.marks, self.now(), self.geom["cols"],
+        before, mid, after = row(self.marks, self.now(), self.geom["cols"] - 1,
                                  lambda at: self.clock(at, length))
         text = (f"\x1b[2m{before}\x1b[0m" + (f"\x1b[1;7m {mid} \x1b[0m" if mid else "")
                 + f"\x1b[2m{after}\x1b[0m")
@@ -167,7 +195,7 @@ class BookmarksMixin:
     def marks_rows(self, lay, geom):
         """The terminal row for bookmarks and the initial sentinel for draw_marks."""
         bottom = lay["row"] * geom["cell_h"] + lay["Y"] + lay["h"]
-        rows = min(-(-bottom // geom["cell_h"]) + 1, geom["rows"] - 1)
+        rows = min(-(-bottom // geom["cell_h"]) + 1, self.status_row - 1)
         return rows, None
 
     def mark_key(self, s):

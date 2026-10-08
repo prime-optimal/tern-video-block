@@ -67,15 +67,39 @@ The first file sets the frame rate, the length and the sound; the others are bro
 | `[` `]` | previous / next bookmark (back to the start of this one first when it has played for a while) |
 | Home, `0` | the start |
 | `1` `2` `3` | speed 0.25x / 0.5x / 1x |
+| ↑ ↓ | previous / next media file of the folder, opened in place, in the Files pane's order (`clip`, `clip2`, `clip10`, `clip_cut`; a note at either end). The Files pane's highlight stays where you clicked: Tern gives plugins no way to move it |
+| `i` `o` | set the in point at the start of this frame / the out point at its end |
+| `x` | clear the range |
+| `c` | cut the range out of the file (no re-encoding) |
+| `g` | make a GIF of the range (video only; needs `gifski`) |
 | `n` `v` | next / previous track of a playlist |
-| `o` | open another file (`fzf`, else a typed path) |
+| `O` | open another file (`fzf`, else a typed path) |
 | `m` | mute |
 | `-` `=` | zoom the waveform out (to the whole track) / in — also cmd+- and cmd+= where the terminal passes them on |
 | `z` | the whole track at once |
 | `q`, Esc | quit (the block closes) |
 
-The bottom row is a status line: play state, the time as a clock (`04:35`; `01:02:10` once the file is an hour or
-longer), a video's frame number, chapter, speed, the span of the waveform and the keys.
+The status line (the bottom row, or the one above the info row) shows the play state, the time as a clock (`04:35`;
+`01:02:10` once the file is an hour or longer), a video's frame number, chapter, speed, the span of the waveform and
+the keys. Lines are cut to the pane's width, so a narrow pane never wraps (and scrolls) them.
+
+In a pane of 8 rows or more the info row sits under it: the range (`[01.50 → 04.00]`), the export running or last done,
+and what the file is: `mov · 00:04 · h264 640x360 25fps · 1.2 Mb/s · aac 44.1kHz stereo · 1.3 MB`, from the same
+ffprobe call that opens the file.
+
+## Ranges, cuts and GIFs
+
+`i` sets the in point at the start of the frame on show, `o` the out point at its end, `x` clears both. They are kept per
+file in the bookmarks database (table `ranges`, made by the first one), so the range is still there next time.
+
+`c` cuts the range out of the file with ffmpeg stream copy (`-c copy`: no re-encoding, so it starts on the keyframe at
+or before the in point) and `g` makes a GIF (10 fps, at most 320 px wide; ffmpeg feeds `gifski`, which is optional: without it `g` says so).
+With only an in point the range runs to the end of the file, with only an out point from the start.
+
+Exports run in the background, detached from the player, so they finish when the player quits. They land beside the
+source file, as `NAME_0m01.50s-0m04.00s.EXT` (`.gif` for a GIF), written to a hidden `.NAME…` file first and moved into
+place when whole; an existing file is never overwritten (`… (2).mp4`). The info row says running, done (the file's name)
+or failed (the first line of what ffmpeg said).
 
 ## Audio
 
@@ -117,7 +141,11 @@ them into raw RGB frames at the pane's pixel size. Each frame is written to a fi
 handed to the terminal by path, replacing one image in place, so the pane never flickers or stacks pictures; the files
 are deleted a second after they are shown. mpv plays the first file's sound with no video, driven over its JSON IPC
 (pause, exact seeks, speed), and its position is the clock the frames follow: late frames are skipped, never queued.
-Files without sound play on the wall clock.
+Files without sound play on the wall clock. The clock follows mpv's `audio-pts` (smooth), not `time-pos`, which with
+`--no-video` only moves in half-second steps. A pane resize keeps the old picture until the first frame at the new
+size replaces it and redraws at the clock without seeking the sound. What a resize still costs is ffmpeg starting again
+at the new size: one hold of about 150–180 ms for a 720p file (the player asks for the size once a second, so at most
+one a second while a pane is dragged); the kitty protocol itself adds nothing.
 
 Things about Tern that shaped it:
 
@@ -127,6 +155,10 @@ Things about Tern that shaped it:
 - Tern answers temporary-file transmissions (`t=t`) with OK and then "no such file", and acknowledges shared-memory
   ones (`t=s`) without drawing them, so frames go by plain file path (`t=f`) and the player deletes them itself.
 - `tern split` leaves the focus in the pane it was run from, so `--split` focuses the new block itself.
+- A Files-pane click keeps the keyboard on the Files list even after the plugin focuses the new pane (Space there opens
+  the file again, in an HTML preview), so for an open from the Files pane `window.luau` waits 150 ms, runs the
+  `focus_tabs` command and focuses the pane: Space and the other keys then reach the player while the Files pane stays
+  open. Plugins cannot move the Files pane's highlight, so ↑ / ↓ in the player walk the folder themselves.
 - `tern open` on a video prints "cannot open in a file block" and exits 1 even though the plugin opens it: Tern's
   command line checks the file type before routing the open.
 - Tern binds `cmd+=` and `cmd+-` to its own font zoom, so those chords zoom the terminal rather than the pane; the
@@ -148,12 +180,15 @@ python3 -m pytest               # needs ffmpeg; pytest
 ### Files
 
 - `tern_video_block.py` — the core player, playable from the terminal: probes files, decodes frames, draws them, and
-  handles the sound. Stays close to its upstream base (194ef80). Relies on mixins from `tvb_audio.py` and
-  `tvb_bookmarks.py` for audio and bookmark features.
-- `tvb_audio.py` — `AudioMixin` (the visualizer theme, the zoom, the waveform, the playlist and file picker) plus
-  `probe_audio`, `span_name`, `zoom_chord`, `media_files`, `AUDIO_EXT` and helpers; never imports the core module.
+  handles the sound. Stays close to its upstream base (194ef80). Relies on mixins from `tvb_audio.py`,
+  `tvb_bookmarks.py` and `tvb_cut.py` for audio, bookmark and range features.
+- `tvb_audio.py` — `AudioMixin` (the visualizer theme, the zoom, the waveform, the playlist, the file picker and the
+  up / down move to the folder's neighbouring file) plus `probe_audio`, `span_name`, `zoom_chord`, `media_files`,
+  `media_neighbour`, `AUDIO_EXT` and helpers; never imports the core module.
 - `tvb_vis.py` — the visualizer presets, `_visualizer`, `visualize`, `visualize_cmd`, `wave_cmd`, `_Wave`,
   `term_colors`, `_why` and related constants; no circular imports.
-- `tvb_bookmarks.py` — the `Bookmarks` SQLite store, `BookmarksMixin` (load, add, remove, jump marks), and the
-  `current` / `row` helpers.
+- `tvb_bookmarks.py` — the `Bookmarks` SQLite store (bookmarks and ranges), `BookmarksMixin` (load, add, remove, jump
+  marks), and the `current` / `row` helpers.
+- `tvb_cut.py` — `CutMixin` (the in / out range, cuts, GIFs, the info row), `describe` (the info row's one-line
+  summary of a probe), `fit` and the export helpers.
 - `tvb_common.py` — `PlayError`, the one exception shared by all modules.
