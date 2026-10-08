@@ -153,7 +153,7 @@ python3 -m pytest               # needs ffmpeg; pytest
 - `tvb_audio.py` — `AudioMixin` (the visualizer theme, the zoom, the waveform, the playlist and file picker) plus
   `probe_audio`, `span_name`, `zoom_chord`, `media_files`, `AUDIO_EXT` and helpers; never imports the core module.
 - `tvb_vis.py` — the visualizer presets, `_visualizer`, `visualize`, `visualize_cmd`, `wave_cmd`, `_Wave`,
-  `term_colors`, `_why`, `wave_layout` and related constants; no circular imports.
+  `term_colors`, `_why` and related constants; no circular imports.
 - `tvb_bookmarks.py` — the `Bookmarks` SQLite store, `BookmarksMixin` (load, add, remove, jump marks), and the
   `current` / `row` helpers.
 - `tvb_common.py` — `PlayError`, the one exception shared by all modules.
