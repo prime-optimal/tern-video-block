@@ -17,11 +17,12 @@ README's "Things about Tern that shaped it" lists the terminal quirks the player
   features go in mixins, the core only gets small hooks. Check with
   `git diff --shortstat 194ef80 -- tern_video_block.py` (≈ +146/−39 after the split); a big jump means code moved
   the wrong way.
-- `tvb_audio.py` (`AudioMixin`: playlist, waveform layout, zoom, `o` picker with `suspended()`, audio keys,
-  `probe_audio`), `tvb_vis.py` (visualizer graphs, `_Wave` strip, `visualize_cmd`, `wave_cmd`, `_why`, `TERM_COLORS`),
+- `tvb_audio.py` (`AudioMixin`: playlist, waveform layout, zoom, `O` picker with `suspended()`, ↑/↓ folder
+  neighbours via `media_neighbour`, audio keys, `probe_audio`), `tvb_cut.py` (`CutMixin`: `i`/`o`/`x` range, `c` cut,
+  `g` GIF, detached exports, the info row, `describe`, `fit`), `tvb_vis.py` (visualizer graphs, `_Wave` strip, `visualize_cmd`, `wave_cmd`, `_why`, `TERM_COLORS`),
   `tvb_bookmarks.py` (SQLite store + `BookmarksMixin`), `tvb_common.py` (the one `PlayError`).
 - Mixins never import the core. The core reaches them through hooks: `audio_layout(geom, rows, layout)`,
-  `audio_key(s)` / `mark_key(s)`, `probe_files`, `reset_frames`. Every module raises `tvb_common.PlayError`; a second
+  `audio_key(s)` / `mark_key(s)` / `cut_key(s)`, `probe_files`, `reset_frames`. Every module raises `tvb_common.PlayError`; a second
   `PlayError` class means errors from the mixins escape the player's handler.
 - Code style here is upstream's: long prose docstrings, comments where upstream has them. Match it, and keep the README
   (keys table, `--help`, Files list) in step with any change.
@@ -78,7 +79,7 @@ $C quit                                # closes the window
 - The verb is `shot NAME`, not `screenshot`. `key` takes names such as `Enter` and `escape`. `tree` / `dump` give
   layout JSON.
 - Read every PNG and check: the video picture with a status clock; the waveform in theme colours with the red playhead;
-  the `⚑ MM:SS` row after `b`; `track 2/2` after `n`; the fzf list after `o`, then playback again after `Enter`.
+  the `⚑ MM:SS` row after `b`; `track 2/2` after `n`; the fzf list after `O`, then playback again after `Enter`.
 - Test the plugin route itself (`tern plugin link .`, `tern plugin reload`, `tern plugin list` showing `video-block …
   ready`) by single- and double-clicking a media file in the window's Files pane. Use `tree` to find the row, and click at
   screenshot px / 2.

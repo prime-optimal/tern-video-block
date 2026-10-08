@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 tern-video-block = "tern_video_block:main"
 
 [tool.setuptools]
-py-modules = ["tern_video_block", "tvb_bookmarks"]
+py-modules = ["tern_video_block", "tvb_audio", "tvb_bookmarks", "tvb_common", "tvb_cut", "tvb_vis"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tern_video_block.__version__" }

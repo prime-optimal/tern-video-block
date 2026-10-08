@@ -182,7 +182,7 @@ def test_the_sound_plays_on_when_the_loop_goes_back_after_its_end(tmp_path, monk
 def test_the_clock_follows_the_sound_until_the_sound_has_ended():
     p = _player([])
     p.paused = False
-    sound = {"time-pos": 1.0, "eof-reached": False}
+    sound = {"audio-pts": 1.0, "time-pos": 0.5, "eof-reached": False}
     p.audio = types.SimpleNamespace(get=lambda prop, timeout=0.2: sound[prop])
     p.anchor(2.0)
     p.sync_to_sound()
@@ -192,6 +192,41 @@ def test_the_clock_follows_the_sound_until_the_sound_has_ended():
     p.next_sync = 0.0
     p.sync_to_sound()
     assert p.now() == pytest.approx(2.0, abs=0.02)                           # the picture goes on by itself
+
+
+def test_the_clock_prefers_the_sounds_audio_pts_and_falls_back_to_its_time_pos():
+    p = _player([])
+    p.paused = False
+    sound = {"audio-pts": None, "time-pos": 1.0, "eof-reached": False}     # no audio-pts yet (just after a seek)
+    p.audio = types.SimpleNamespace(get=lambda prop, timeout=0.2: sound[prop])
+    p.anchor(2.0)
+    p.sync_to_sound()
+    assert p.now() == pytest.approx(1.0, abs=0.02)
+    sound["audio-pts"], sound["time-pos"] = 3.25, 0.0                        # time-pos steps by half seconds: ignored
+    p.anchor(2.0)
+    p.next_sync = 0.0
+    p.sync_to_sound()
+    assert p.now() == pytest.approx(3.25, abs=0.02)
+
+
+def test_a_resize_redraws_the_picture_at_the_clock_without_moving_the_clock_or_the_sound():
+    p = TVB.Player([ITEM], [], paused=False)
+    out: list[str] = []
+    p.out = out.append
+    p.frame_dir = tempfile.mkdtemp(dir="/tmp")
+    p.geom = {"cols": 80, "rows": 24, "cell_w": 8, "cell_h": 16}
+    sent = []
+    p.audio = types.SimpleNamespace(send=lambda *a: sent.append(a))
+    p.picture = lambda t: b"\0" * (p.lay["w"] * p.lay["h"] * 3)
+    try:
+        p.relayout(p.geom)
+        assert out == []                                                     # the old picture stays up: nothing cleared
+        p.anchor(2.0)
+        p.seek(2.0, resync=False)
+        assert sent == [] and p.now() < 2.5                                  # no audio seek, no re-anchor
+        assert out[0].startswith("\x1b[2J\x1b[") and "a=T" in out[0]         # the clear goes out with the new picture
+    finally:
+        shutil.rmtree(p.frame_dir, ignore_errors=True)
 
 
 def test_the_terminals_size_reports_set_the_new_size_and_never_act_as_keys():
@@ -207,9 +242,10 @@ def test_the_terminals_size_reports_set_the_new_size_and_never_act_as_keys():
     assert p.key(b"q") is False
 
 
-def _on_a_pty(code, answers, env=None, until=None):
+def _on_a_pty(code, answers, env=None, until=None, keys=()):
     """Runs `code` in a fresh Python on a pseudo-terminal whose other end answers the terminal's queries with `answers`
-    ({query: reply}, each once), until the output matches `until` or the program ends; (output, exit code). A new
+    ({query: reply}, each once), until the output matches `until` or the program ends; (output, exit code). `keys` are
+    [(pattern, bytes)] typed in turn, each once the output since the last has matched its pattern. A new
     process, not a fork: forking the threaded test process can deadlock the child."""
     import pty
     master, slave = pty.openpty()
@@ -218,6 +254,7 @@ def _on_a_pty(code, answers, env=None, until=None):
                             env={**os.environ, **(env or {})})
     os.close(slave)
     buf, done, deadline = b"", set(), time.monotonic() + 15
+    keys, seen = list(keys), 0
     try:
         while time.monotonic() < deadline and not (until and re.search(until, buf)):
             ready, _, _ = select.select([master], [], [], 0.05)
@@ -232,6 +269,9 @@ def _on_a_pty(code, answers, env=None, until=None):
             if not chunk:
                 break
             buf += chunk
+            if keys and re.search(keys[0][0], buf[seen:]):
+                os.write(master, keys.pop(0)[1])
+                seen = len(buf)
             for q, a in answers.items():
                 if q in buf and q not in done:
                     os.write(master, a)
@@ -434,8 +474,8 @@ def _wave_player(monkeypatch, tmp_path, duration=600.0, visualizer=None):
 def test_a_track_opens_on_a_span_of_its_own_shown_whole_in_the_pane(monkeypatch, tmp_path):
     p, calls, out = _wave_player(monkeypatch, tmp_path)
     assert p.span == VIS.SPAN_DEFAULT == 90.0 and isinstance(p.wave, VIS._Wave)
-    assert (p.wave.pw, p.wave.ph) == (p.lay["w"], p.lay["h"]) == (640, 360)  # the pane in pixels, above the status row
-    assert p.next_frame_in() == pytest.approx(90.0 / 640)                    # a pixel of the strip: 0.14 s
+    assert (p.wave.pw, p.wave.ph) == (p.lay["w"], p.lay["h"]) == (626, 352)  # the pane above the status and info rows
+    assert p.next_frame_in() == pytest.approx(90.0 / 626)                    # a pixel of the strip: 0.14 s
     p.status(force=True)
     assert "span 1m30s" in _status(out)                                      # the status line says the span
     assert p.wave.seconds == 600.0                                           # 8 screens of 90 s: the whole track
@@ -455,7 +495,7 @@ def test_zooming_steps_out_to_the_whole_track_and_back_in_again(monkeypatch, tmp
     assert p.span == 90.0
     p.zoom(0)
     assert p.span == 600.0                                                   # z: the whole track, whatever the span was
-    assert calls[-1] == (0.0, 600.0, 640, 360)                               # drawn at once: one pane-wide screen
+    assert calls[-1] == (0.0, 600.0, 626, 352)                               # drawn at once: one pane-wide screen
     assert p.wave.frame(0.0) is None                                         # and the pane is already showing it
 
 

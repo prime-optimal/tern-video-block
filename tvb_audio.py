@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 
+import tvb_cut
 import tvb_vis
 
 from tvb_common import PlayError
@@ -14,8 +15,8 @@ from tvb_common import PlayError
 AUDIO_EXT = {".wav", ".wave", ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wma", ".aif", ".aiff"}
 VIDEO_EXT = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".m2ts", ".mts",
              ".ogv", ".3gp"}                              # the extensions the Tern plugin routes here
-AUDIO_KEYS = ("space play/pause  \u2190\u2192 5 s  {zoom}b B [ ] mark  n v track  o open  m mute  "
-              "q quit")
+AUDIO_KEYS = ("space play/pause  \u2190\u2192 5 s  \u2191\u2193 file  {zoom}i o x c range cut  b B [ ] mark  "
+              "n v track  O open  m mute  q quit")
 ZOOM_KEYS = "- = zoom  z whole  "
 CSI_U = re.compile(rb"^\x1b\[(\d+)(?:;\d+)?(?::\d+)?[u~]$")
 
@@ -36,7 +37,7 @@ def probe_audio(path, info, streams, chapters):
     if duration <= 0:
         raise PlayError(f"{path}: no duration")
     return {"path": str(path), "w": tvb_vis.AUDIO_SIZE[0], "h": tvb_vis.AUDIO_SIZE[1], "fps": 30.0, "duration": duration,
-            "audio": True, "waveform": True, "chapters": chapters}
+            "audio": True, "waveform": True, "chapters": chapters, "info": tvb_cut.describe(info)}
 
 
 def span_name(span, duration):
@@ -61,6 +62,27 @@ def zoom_chord(seq):
     if not m:
         return 0
     return 1 if m.group(1) in (b"43", b"61") else -1 if m.group(1) in (b"45", b"95") else 0
+
+
+def natural_key(name):
+    """A sort key in the order of Tern's Files pane: the name before its extension first, so "clip.mp4" comes before
+    "clip2.mp4" and "clip_cut.mp4"; numbers by value ("clip2" before "clip10"); case ignored."""
+    stem, ext = os.path.splitext(name.lower())
+    return [[int(p) if p.isdigit() else p for p in re.split(r"(\d+)", s)] for s in (stem, ext)] + [name]
+
+
+def media_neighbour(path, step):
+    """The media file `step` places after (1) or before (-1) `path` among the media files of its folder (the extensions
+    the Tern plugin routes, hidden files left out, natural order), or None at either end."""
+    folder, name = os.path.split(os.path.abspath(path))
+    try:
+        names = {n for n in os.listdir(folder) if not n.startswith(".")
+                 and os.path.splitext(n)[1].lower() in AUDIO_EXT | VIDEO_EXT and os.path.isfile(os.path.join(folder, n))}
+    except OSError:
+        return None
+    names = sorted(names | {name}, key=natural_key)
+    k = names.index(name) + step
+    return os.path.join(folder, names[k]) if 0 <= k < len(names) else None
 
 
 def media_files(start, depth=2):
@@ -110,7 +132,7 @@ class AudioMixin:
 
     def note(self, text):
         """A line at the bottom row instead of the status line (an error the next status redraw takes back)."""
-        self.out(f"\x1b[{self.geom['rows']};1H\x1b[2K\x1b[2m{text}\x1b[0m")
+        self.out(f"\x1b[{self.status_row};1H\x1b[2K\x1b[2m{tvb_cut.fit(text, self.geom['cols'] - 1)}\x1b[0m")
         self.last_status = ""
 
     def next_frame_in(self):
@@ -211,6 +233,15 @@ class AudioMixin:
         else:
             self.restart(items, None, 0)
 
+    def open_neighbour(self, step):
+        """Play the next (1) or previous (-1) media file of the folder of the file playing, in place of it; a note at
+        either end of the folder."""
+        path = media_neighbour(self.items[0]["path"], step)
+        if path is None:
+            self.note("the last file of the folder" if step > 0 else "the first file of the folder")
+            return
+        self.open_file([path])
+
     def pick_file(self, start=None):
         """A path to play, picked from the filesystem: fzf over the media files under `start` (the directory of the
         file playing, two folders deep), else a path typed on the bottom row. None when nothing was picked."""
@@ -227,7 +258,7 @@ class AudioMixin:
 
     def read_line(self, prompt):
         """A line typed at the bottom row, in the terminal's own line mode (no fzf to pick a file with)."""
-        self.out(f"\x1b[{self.geom['rows']};1H\x1b[2K{prompt}")
+        self.out(f"\x1b[{self.status_row};1H\x1b[2K{tvb_cut.fit(prompt, self.geom['cols'] - 1)}")
         raw = b""
         while True:
             c = os.read(self.fd_in, 1)
@@ -244,8 +275,9 @@ class AudioMixin:
         import termios
         raw = termios.tcgetattr(self.fd_in)
         quiet = signal.signal(signal.SIGINT, signal.SIG_IGN)          # ^C cancels the picker, not the player
-        self.relayout(self.geom)                                      # the picture taken down, the pane cleared
-        self.out("\x1b[?25h\x1b[?1049l")
+        self.relayout(self.geom)
+        self.clear_picture()                                          # the picture taken down, the pane cleared
+        self.out("\x1b[?7h\x1b[?25h\x1b[?1049l")
         if self.old_termios is not None:
             termios.tcsetattr(self.fd_in, termios.TCSADRAIN, self.old_termios)
         try:
@@ -253,7 +285,7 @@ class AudioMixin:
         finally:
             termios.tcsetattr(self.fd_in, termios.TCSADRAIN, raw)
             signal.signal(signal.SIGINT, quiet)
-            self.out("\x1b[?1049h\x1b[?25l\x1b[2J")
+            self.out("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J")
             t = self.now()
             self.relayout()
             self.seek(t)
@@ -280,7 +312,7 @@ class AudioMixin:
 
     def audio_key(self, s):
         """Audio keys: zoom (the - + / = keys and extended keyboard zoom chords, z the whole track), the playlist (n, v),
-        another file (o, O). True when handled."""
+        another file (O), the folder's files (up and down arrows). True when handled."""
         d = zoom_chord(s)
         if d:
             self.zoom(d)
@@ -291,7 +323,10 @@ class AudioMixin:
         if s == b"v":
             self.next_track(-1)
             return True
-        if s in (b"o", b"O"):
+        if s in (b"\x1b[A", b"\x1b[B", b"\x1bOA", b"\x1bOB"):
+            self.open_neighbour(-1 if s.endswith(b"A") else 1)
+            return True
+        if s == b"O":
             paths = self.pick_file()
             if paths:
                 self.open_file(paths)
