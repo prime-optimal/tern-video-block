@@ -27,8 +27,21 @@ local function quote(s: string): string
 	return "'" .. body .. "'"
 end
 
+local BOOKMARKS = tern.plugin.data .. "/bookmarks.db"
+
 -- The video block the last preview opened: the next preview takes its place.
 local preview: number? = nil
+
+tern.command({
+	id = "open-bookmarks",
+	title = "Media: Open bookmarks",
+	available = function(): boolean
+		return tern.fs.exists(BOOKMARKS)
+	end,
+	run = function(cx: WindowCx)
+		cx:open(BOOKMARKS, "beside")
+	end,
+})
 
 tern.route.open(function(req: OpenRequest, cx: WindowCx): RouteDecision?
 	local ext = string.lower(string.match(req.path, "%.([%w]+)$") or "")
@@ -37,7 +50,8 @@ tern.route.open(function(req: OpenRequest, cx: WindowCx): RouteDecision?
 	end
 	local launch = {
 		cwd = string.match(req.path, "^(.*)/[^/]*$") or "/",
-		command = "python3 " .. quote(tern.plugin.dir .. "/tern_video_block.py") .. " " .. quote(req.path),
+		command = "python3 " .. quote(tern.plugin.dir .. "/tern_video_block.py") .. " --bookmarks " .. quote(BOOKMARKS)
+			.. " " .. quote(req.path),
 	}
 	local reveal = { focus = true }
 	local target = cx.session:focused()
@@ -51,7 +65,7 @@ tern.route.open(function(req: OpenRequest, cx: WindowCx): RouteDecision?
 	end
 	local pane = cx.layout:split(target, if req.how == "below" then "down" else "right", launch, reveal)
 	if old ~= nil then
-		cx.layout:close(old)
+		pcall(cx.layout.close, cx.layout, old)
 	end
 	if req.how == "preview" then
 		preview = pane

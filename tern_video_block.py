@@ -43,13 +43,16 @@ import tempfile
 import time
 from collections import deque
 
+import tvb_bookmarks
+
 __version__ = "0.1.0"
 
 KITTY_ID = 7311                                   # the image the player replaces frame after frame
 KEEP_FRAMES = 30                                  # frame files kept after showing them (the terminal may read late)
 SPEEDS = {"1": 0.25, "2": 0.5, "3": 1.0}
-KEYS = "space play/pause  \u2190\u2192 5 s  , . frame  PgUp/PgDn chapter  1 2 3 speed  m mute  q quit"
-AUDIO_KEYS = "space play/pause  \u2190\u2192 5 s  {zoom}n v track  o open  m mute  q quit"
+KEYS = ("space play/pause  \u2190\u2192 5 s  , . frame  PgUp/PgDn chapter  b B [ ] mark  1 2 3 speed  m mute  "
+        "q quit")
+AUDIO_KEYS = "space play/pause  \u2190\u2192 5 s  {zoom}b B [ ] mark  n v track  o open  m mute  q quit"
 ZOOM_KEYS = "- = zoom  z whole  "
 SIZE_REPORT = re.compile(rb"\x1b\[(8|6);(\d+);(\d+)t")    # the answers to CSI 18 t (rows, cols) and CSI 16 t (cell px)
 AUDIO_EXT = {".wav", ".wave", ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wma", ".aif", ".aiff"}
@@ -123,7 +126,7 @@ def _visualizer(text, colors=None):
     if not spec:
         spec = {"filter": name}                                  # a filtergraph of the caller's own
     if "wave" in spec:
-        spec["wave"] = {**spec["wave"], "fg": c["fg"], "red": c["red"], "bg": c["bg"]}
+        spec["wave"] = {**spec["wave"], "fg": c["fg"], "red": c["red"], "bg": c["bg"], "mark": c["yellow"]}
     else:
         graph = spec["filter"]
         if "showwaves" in graph and re.search(r"showwaves[^,;]*[:=]s=", graph) is None:
@@ -377,8 +380,13 @@ class _Wave:
         self.seconds = min(self.span * STRIP_SCREENS, self.duration)   # the sound one strip covers
         self.count = max(1, math.ceil(self.duration / self.seconds - 1e-9))
         self.n, self.strip, self.sw, self.t0, self.t1, self.px = None, b"", 0, 0.0, 0.0, 0.0
-        self.shown, self.renders = (-1, -1), 0
+        self.shown, self.renders, self.marks = (-1, -1), 0, ()
         self.line = bytes.fromhex(self.wave["red"].lstrip("#"))        # the playhead, two pixels of it
+        self.mark = bytes.fromhex(self.wave.get("mark", TERM_COLORS["yellow"]).lstrip("#"))
+
+    def set_marks(self, marks):
+        """Draw these bookmarks (seconds) over the strip from the next frame on."""
+        self.marks, self.shown = tuple(marks), (-1, -1)
 
     def render(self, n):
         """Draw strip n (the sound of strip_seconds from its start) and keep it: sw x ph of raw RGB, the playhead
@@ -411,6 +419,16 @@ class _Wave:
         for r in range(self.ph):
             b = r * row + off * 3
             out[r * self.pw * 3:(r + 1) * self.pw * 3] = self.strip[b:b + self.pw * 3]
+        for at in self.marks:                                          # bookmarks: a dashed column, a tab on top
+            mx = int((at - self.t0) * self.px) - off
+            if not (self.t0 <= at <= self.t1 and 0 <= mx < self.pw):
+                continue
+            for r in range(self.ph):
+                if r < 6 or (r // 4) % 2 == 0:
+                    i = r * self.pw * 3 + mx * 3
+                    out[i:i + 3] = self.mark
+                    if r < 6 and mx + 2 < self.pw:
+                        out[i + 3:i + 9] = self.mark * 2
         for r in range(self.ph):                                       # the playhead, and not one pixel past the edge
             i = r * self.pw * 3 + x * 3
             out[i:i + 3], edge = self.line, self.pw * 3 - x * 3
@@ -641,7 +659,7 @@ class Player:
     file in place of them, and the range and `once` shape the first track alone."""
 
     def __init__(self, items, chapters=(), first_frame=0, sound=True, paused=False, start=0.0, end=None, once=False,
-                 visualizer=None):
+                 visualizer=None, bookmarks=None):
         self.vis_text, self.visualizer = visualizer or "", _visualizer(visualizer)
         items = [dict(it) for it in items]
         self.span = SPAN_DEFAULT if self.visualizer.get("wave") and items[0].get("waveform") else None
@@ -667,6 +685,7 @@ class Player:
         self.new_geom, self.ask_size_at = None, 0.0          # a size the terminal reported; when to ask again
         self.t_media, self.t_wall = 0.0, time.monotonic()
         self.last_status, self.next_sync = "", 0.0
+        self.store, self.marks, self.marks_row, self.last_marks = bookmarks, [], 0, None
 
     # ---- the clock: media time anchored to the wall clock, re-anchored to the sound now and then
     def now(self):
@@ -708,6 +727,7 @@ class Player:
                  f"p=1,X={lay['X']},Y={lay['Y']},C=1,q=2;{base64.b64encode(path.encode()).decode()}\x1b\\")
 
     def status(self, force=False):
+        self.draw_marks(force)
         t = self.now()
         k = chapter_at(self.chapters, t)
         icon = "\u275a\u275a" if self.paused else "\u25b6"
@@ -730,6 +750,19 @@ class Player:
         self.out(f"\x1b[{self.geom['rows']};1H\x1b[2K\x1b[2m{text}\x1b[0m")
         self.last_status = ""
 
+    def draw_marks(self, force=False):
+        """The bookmarks row under the picture, the one the playhead has reached highlighted; no row without any."""
+        if not self.marks:
+            return
+        length = round(self.duration)
+        before, mid, after = tvb_bookmarks.row(self.marks, self.now(), self.geom["cols"],
+                                               lambda at: clock(at, length))
+        text = (f"\x1b[2m{before}\x1b[0m" + (f"\x1b[1;7m {mid} \x1b[0m" if mid else "")
+                + f"\x1b[2m{after}\x1b[0m")
+        if force or text != self.last_marks:
+            self.out(f"\x1b[{self.marks_row};1H\x1b[2K{text}")
+            self.last_marks = text
+
     def title(self):
         """The terminal's title: the files playing, and which track of the playlist they are."""
         names = " | ".join(os.path.basename(it["path"]) for it in self.items)
@@ -745,17 +778,21 @@ class Player:
         if geom is None:
             raise PlayError("the terminal does not report its size in pixels (CSI 16 t / 18 t)")
         self.geom = geom
-        item = self.items[0]
+        item, rows = self.items[0], 2 if self.marks else 1
         if item.get("waveform"):
             shape = dict(item, w=float(VIS_SIZE[0]), h=float(VIS_SIZE[1]))
-            self.lay = layout([shape], geom)
+            self.lay = layout([shape], geom, rows)
             self.wave = (_Wave(item, self.visualizer["wave"], self.span, self.lay)
                          if self.visualizer.get("wave") else None)
             if self.wave is None:
                 self.items[0] = visualize(item, self.lay, self.visualizer, self.fps)
         else:
             self.wave = None
-            self.lay = layout(self.items, geom)
+            self.lay = layout(self.items, geom, rows)
+        if self.wave is not None:
+            self.wave.set_marks(m["at"] for m in self.marks)
+        bottom = self.lay["row"] * geom["cell_h"] + self.lay["Y"] + self.lay["h"]
+        self.marks_row, self.last_marks = min(-(-bottom // geom["cell_h"]) + 1, geom["rows"] - 1), None
         self.out(f"\x1b_Ga=d,d=I,i={KITTY_ID},q=2\x1b\\\x1b[2J")
 
     # ---- the visualizer: the terminal's colors, the span of the waveform, the keys for it
@@ -790,6 +827,7 @@ class Player:
         if abs(span - now_span) > 1e-6:
             self.span = span
             self.wave = _Wave(self.items[0], self.visualizer["wave"], span, self.lay)
+            self.wave.set_marks(m["at"] for m in self.marks)
         self.status(force=True)
         data = self.wave.frame(self.now())                          # redraw now: the next frame may be a while off
         if data is not None:
@@ -844,6 +882,55 @@ class Player:
         k = int(math.floor(self.now() * self.fps + 1e-6)) + n
         self.seek(k / self.fps)
 
+    # ---- bookmarks
+    def load_marks(self):
+        """The bookmarks of the file playing, from the store; none without one."""
+        self.marks = self.store.of(self.items[0]["path"]) if self.store else []
+
+    def change_marks(self, write):
+        """Write to the store, then show the bookmarks again: the row comes and goes with the first and the last."""
+        if not self.store:
+            self.note("no bookmarks database (pass --bookmarks FILE)")
+            return
+        had = bool(self.marks)
+        try:
+            write()
+        except Exception as e:                                         # sqlite3.Error, OSError: a note, play on
+            self.note(f"bookmarks: {e}")
+            return
+        self.load_marks()
+        if had != bool(self.marks):
+            t = self.now()
+            self.relayout(self.geom)
+            self.seek(t)
+        else:
+            if self.wave is not None:
+                self.wave.set_marks(m["at"] for m in self.marks)
+                data = self.wave.frame(self.now())
+                if data is not None:
+                    self.show(data)
+            self.status(force=True)
+
+    def add_mark(self):
+        at = int(math.floor(self.now() * self.fps + 1e-6)) / self.fps
+        self.change_marks(lambda: self.store.add(self.items[0]["path"], at))
+
+    def remove_mark(self):
+        k = tvb_bookmarks.current(self.marks, self.now())
+        if k >= 0:
+            at = self.marks[k]["at"]
+            self.change_marks(lambda: self.store.remove(self.items[0]["path"], at))
+
+    def jump_mark(self, d):
+        """To the next (d=1) or previous (d=-1) bookmark; back to this one first when it has played for a while."""
+        if not self.marks:
+            return
+        t = self.now()
+        k = tvb_bookmarks.current(self.marks, t)
+        if not (d < 0 and k >= 0 and t - self.marks[k]["at"] > 0.5):
+            k = min(max(k + d, 0), len(self.marks) - 1)
+        self.seek(self.marks[k]["at"])
+
     # ---- the tracks, the sound and other files
     def open_audio(self):
         """Start mpv on the file playing now (closing the last), the sound on and at the player's speed and pause; a
@@ -877,6 +964,7 @@ class Player:
         was_paused = self.paused
         self.paused = True
         self.open_audio()
+        self.load_marks()
         self.title()
         self.relayout(self.geom)
         self.seek(self.start)
@@ -1008,6 +1096,12 @@ class Player:
                 self.zoom(1)                                        # a narrower span: a second a screen at the end
             elif self.wave is not None and s in (b"z", b"Z"):
                 self.zoom(0)                                        # the whole track: one screen, end to end
+            elif s == b"b":
+                self.add_mark()
+            elif s == b"B":
+                self.remove_mark()
+            elif s in (b"[", b"]"):
+                self.jump_mark(1 if s == b"]" else -1)
         return True
 
     # ---- the loop
@@ -1032,6 +1126,7 @@ class Player:
             self.theme_colors()
             self.out("\x1b[?1049h\x1b[?25l\x1b[2J")
             self.title()
+            self.load_marks()
             self.relayout()
             self.open_audio()
             want_paused = self.paused
@@ -1156,6 +1251,8 @@ def main(argv=None):
                                                               "cline, envelope, wavespic, spectrum, spectrogram, cqt, "
                                                               "vectorscope, spectrumpic, or an ffmpeg filtergraph; a "
                                                               "colormap may follow a name, as in cqt:viridis")
+    p.add_argument("--bookmarks", metavar="FILE", help="the SQLite database of bookmarks (default: the plugin's own, in "
+                                                       "Tern's plugin data); b adds one, B removes it, [ ] move between")
     where = p.add_mutually_exclusive_group()
     where.add_argument("--split", choices=("right", "down"), help="open in a new Tern block beside this pane, focused")
     where.add_argument("--tab", action="store_true", help="open in a new Tern tab")
@@ -1168,10 +1265,12 @@ def main(argv=None):
                 raise PlayError(f"{f}: no such file")
         _visualizer(args.audio_visualizer)                        # refuse a name or graph that is not one, before the pane
         chapters_file = os.path.abspath(args.chapters) if args.chapters else None
+        store = os.path.abspath(args.bookmarks) if args.bookmarks else tvb_bookmarks.default_store()
         if args.split or args.tab:
             rest = [*files, "--first-frame", str(args.first_frame)]
             rest += ["--chapters", chapters_file] if chapters_file else []
             rest += ["--audio-visualizer", args.audio_visualizer] if args.audio_visualizer else []
+            rest += ["--bookmarks", store] if store else []
             rest += ["--paused"] if args.paused else []
             rest += ["--no-sound"] if args.no_sound else []
             rest += ["--start", repr(args.start)] + (["--end", repr(args.end)] if args.end is not None else [])
@@ -1183,7 +1282,8 @@ def main(argv=None):
         items = [probe(f) for f in files]
         chapters = read_chapters(chapters_file) if chapters_file else items[0]["chapters"]
         Player(items, chapters, args.first_frame, sound=not args.no_sound, paused=args.paused, start=args.start,
-               end=args.end, once=args.once, visualizer=args.audio_visualizer).run()
+               end=args.end, once=args.once, visualizer=args.audio_visualizer,
+               bookmarks=tvb_bookmarks.Bookmarks(store) if store else None).run()
     except PlayError as e:
         print(f"tern-video-block: {e}", file=sys.stderr)
         return 2
