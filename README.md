@@ -71,7 +71,8 @@ The first file sets the frame rate, the length and the sound; the others are bro
 | `z` | the whole track at once |
 | `q`, Esc | quit (the block closes) |
 
-The bottom row is a status line: play state, time, frame number, chapter, speed, the span of the waveform and the keys.
+The bottom row is a status line: play state, the time as a clock (`04:35`; `01:02:10` once the file is an hour or
+longer), a video's frame number, chapter, speed, the span of the waveform and the keys.
 
 ## Audio
 
