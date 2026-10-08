@@ -2,7 +2,7 @@
 pane and is centred to the pixel; ffmpeg starts on exactly the frame asked for, a file of another rate kept in step with
 the first; chapter jumps visit every chapter when chapters start between frames; the terminal's size reports never act
 as keys; the terminal's size comes from its answers to the escape queries (Tern leaves the pixels out of the kernel's
-window size)."""
+window size); a waveform is a strip of the whole track drawn once, a screen of it at a time, zoomed by the keys."""
 import json
 import os
 import re
@@ -284,3 +284,198 @@ def test_once_plays_the_range_and_then_quits_by_itself(tmp_path):
     assert status == 0                                                       # it ended by itself, not killed looping
     assert out.count(b"\x1b_Ga=T") >= 2                                      # after playing, not at the first frame
     assert os.listdir(run_dir) == []
+
+
+# ---- the waveform: a strip of the whole track, a screen of it at a time, and the zoom
+
+def test_a_waveform_visualizer_is_a_strip_and_the_other_names_are_graphs():
+    wave = TVB._visualizer(None)
+    assert wave["wave"]["mode"] == TVB.WAVE_LOOK["mode"] == "cline"
+    assert wave["size"] == list(TVB.VIS_SIZE) and wave["wave"]["bg"] == TVB.TERM_COLORS["bg"]
+    assert wave["wave"]["fg"] == TVB.TERM_COLORS["fg"]                       # the theme's own colors, not a palette
+    assert wave["wave"]["red"] == TVB.TERM_COLORS["red"]
+    assert TVB._visualizer("wavespic")["wave"]["draw"] == "full"             # the wave filled in
+    assert TVB._visualizer("p2p")["wave"]["mode"] == "p2p"                   # showwaves' own modes, as strips
+    for name in ("spectrum", "spectrogram", "cqt", "vectorscope", "spectrumpic", "viridis"):
+        assert "wave" not in TVB._visualizer(name), name                     # graphs: drawn as the sound plays
+    cscheme = TVB._visualizer("cqt", {"cyan": "#ff0000", "magenta": "#00ff80"})["filter"]
+    assert "cscheme=1.000|0.000|0.000|0.000|1.000|0.502" in cscheme          # the theme's two colors, as showcqt wants
+    assert "{" not in TVB._visualizer("showwaves=line:s=320x200")["filter"]  # a graph of the caller's own, filled in
+    with pytest.raises(TVB.PlayError, match="no quotes"):
+        TVB._visualizer("showwaves=line'")                                   # ffmpeg's graph syntax has no place for it
+
+
+@needs_ff
+def test_a_visualizer_ffmpeg_will_not_run_says_so_where_the_pane_would_be_blank(tmp_path):
+    track = tmp_path / "tone.flac"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:a", "flac", str(track)], check=True)                  # ffmpeg: a name in neither list is a graph
+    lay = {"w": 64, "h": 36}
+    item = TVB.visualize(TVB.probe(str(track)), lay, TVB._visualizer("nosuchviz"), 30.0)
+    frames = TVB._Frames([item], 30.0)
+    frames.start(lay, 0.0)
+    try:
+        with pytest.raises(TVB.PlayError) as refused:                         # not a pane that draws nothing, in silence
+            frames.read()
+    finally:
+        frames.stop()
+    assert "tone.flac" in str(refused.value)
+    assert "No such filter: 'nosuchviz'" in str(refused.value)                # ffmpeg's own words, tag off
+
+
+def test_a_span_reads_as_seconds_minutes_or_the_whole_track():
+    assert TVB.span_name(45, 600) == "45 s"
+    assert TVB.span_name(90, 600) == "1m30s"
+    assert TVB.span_name(1800, 6000) == "30m"
+    assert TVB.span_name(180, 600) == "3m"
+    assert TVB.span_name(600, 600) == "the whole track"                      # the whole span is the whole track
+    assert TVB.span_name(None, 600) == "?"
+
+
+def _fake_strip(monkeypatch, calls, fill=10):
+    """ffmpeg as far as _Wave is concerned: draws its sw x ph of raw RGB, every pixel `fill`."""
+    code = ("import sys\n"
+            "sw, ph, fill = (int(a) for a in sys.argv[1:4])\n"
+            "sys.stdout.buffer.write(bytes([fill]) * (sw * ph * 3))\n")
+
+    def cmd(item, wave, t0, t1, sw, ph):
+        calls.append((t0, t1, sw, ph))
+        return [sys.executable, "-c", code, str(sw), str(ph), str(fill)]
+    monkeypatch.setattr(TVB, "wave_cmd", cmd)
+
+
+def test_a_strip_is_drawn_once_a_screen_of_the_whole_track_and_the_playhead_moves_over_it(monkeypatch):
+    calls = []
+    _fake_strip(monkeypatch, calls)
+    wave = TVB._Wave({"path": "t.flac", "duration": 600.0}, TVB._visualizer(None)["wave"], 6.0, {"w": 40, "h": 6})
+    assert (wave.seconds, wave.count) == (48.0, 13)          # 8 screens of 6 s: a strip per 48 s of the track
+    first = wave.frame(0.0)
+    assert len(first) == 40 * 6 * 3 and calls == [(0.0, 48.0, 320, 6)]       # one call, whole screens of sound wide
+    red = bytes.fromhex(TVB.TERM_COLORS["red"].lstrip("#"))
+    for r in range(6):
+        assert first[r * 120:(r + 1) * 120].count(red) == 2                  # the playhead, at the left of the pane
+        assert set(first[r * 120:(r + 1) * 120]) == {10, *red}               # over the strip, nothing else
+    assert wave.frame(0.0) is None                                          # the pane already shows that picture
+    assert wave.frame(0.2) is not None and calls == [(0.0, 48.0, 320, 6)]    # 6.7 px a second: one pixel on, same strip
+    assert wave.frame(50.0) is not None and len(calls) == 2                  # into the next strip: drawn then, once
+    assert calls[-1] == (48.0, 96.0, 320, 6)
+    assert wave.frame(60.0) is not None and len(calls) == 2                  # and not again for the rest of it
+
+
+def test_a_span_of_the_whole_track_is_one_screen_one_strip_over_the_whole_of_it(monkeypatch):
+    calls = []
+    _fake_strip(monkeypatch, calls)
+    wave = TVB._Wave({"path": "t.flac", "duration": 600.0}, TVB._visualizer(None)["wave"], 600.0, {"w": 40, "h": 6})
+    assert (wave.seconds, wave.count) == (600.0, 1)
+    wave.frame(0.0)
+    assert calls == [(0.0, 600.0, 40, 6)]                                    # the track once, a pane wide, in one call
+    tail = wave.frame(599.0)
+    assert tail is not None and len(calls) == 1                              # nothing drawn again as it plays
+
+
+WAVE_ITEM = {"path": "t.flac", "w": 16, "h": 9, "fps": 30.0, "duration": 600.0, "audio": True, "waveform": True,
+             "chapters": []}
+
+
+STATUS_LINE = re.compile(r"\x1b\[\d+;1H\x1b\[2K\x1b\[2m(.*?)\x1b\[0m")
+
+
+def _status(out):
+    """The last status line the player wrote (the row it writes to, cleared, then the text)."""
+    lines = [m for s in out for m in STATUS_LINE.finditer(s)]
+    return lines[-1].group(1) if lines else ""
+
+
+def _wave_player(monkeypatch, tmp_path, duration=600.0, visualizer=None):
+    calls = []
+    _fake_strip(monkeypatch, calls)
+    p = TVB.Player([dict(WAVE_ITEM, duration=duration)], [], paused=True, visualizer=visualizer)
+    p.geom = {"cols": 80, "rows": 24, "cell_w": 8, "cell_h": 16}
+    out: list[str] = []
+    p.out = out.append
+    p.frame_dir = str(tmp_path / "frames")
+    os.makedirs(p.frame_dir)
+    p.seek = lambda t: p.anchor(t)                                           # no decoder under a strip
+    p.relayout(p.geom)
+    return p, calls, out
+
+
+def test_a_track_opens_on_a_span_of_its_own_shown_whole_in_the_pane(monkeypatch, tmp_path):
+    p, calls, out = _wave_player(monkeypatch, tmp_path)
+    assert p.span == TVB.SPAN_DEFAULT == 90.0 and isinstance(p.wave, TVB._Wave)
+    assert (p.wave.pw, p.wave.ph) == (p.lay["w"], p.lay["h"]) == (640, 360)  # the pane in pixels, above the status row
+    assert p.next_frame_in() == pytest.approx(90.0 / 640)                    # a pixel of the strip: 0.14 s
+    p.status(force=True)
+    assert "span 1m30s" in _status(out)                                      # the status line says the span
+    assert p.wave.seconds == 600.0                                           # 8 screens of 90 s: the whole track
+
+
+def test_zooming_steps_out_to_the_whole_track_and_back_in_again(monkeypatch, tmp_path):
+    p, calls, out = _wave_player(monkeypatch, tmp_path)
+    p.zoom(-1)
+    assert p.span == 180.0 and "span 3m" in _status(out)
+    p.zoom(-1)
+    assert p.span == 600.0 and p.wave.count == 1 and "the whole track" in _status(out)
+    p.zoom(-1)
+    assert p.span == 600.0                                                   # nothing wider than the track itself
+    p.zoom(1)
+    assert p.span == 180.0 and p.wave.seconds == 600.0                       # back in: the strip follows the span
+    p.zoom(1)
+    assert p.span == 90.0
+    p.zoom(0)
+    assert p.span == 600.0                                                   # z: the whole track, whatever the span was
+    assert calls[-1] == (0.0, 600.0, 640, 360)                               # drawn at once: one pane-wide screen
+    assert p.wave.frame(0.0) is None                                         # and the pane is already showing it
+
+
+def test_the_zoom_keys_are_the_bare_ones_and_the_command_key_chords(monkeypatch, tmp_path):
+    p, _, _ = _wave_player(monkeypatch, tmp_path)
+    assert p.key(b"-") is True and p.span == 180.0
+    assert p.key(b"\x1b[45;9u") is True and p.span == 600.0                  # cmd+-
+    assert p.key(b"\x1b[61;9u") is True and p.span == 180.0                  # cmd+=
+    assert p.key(b"\x1b[61;9:1u") is True and p.span == 90.0                 # the same chord, with an event type
+    assert p.key(b"\x1b[45u") is True and p.span == 180.0                    # a terminal writing - as a key code
+    p.key(b"z")
+    assert p.span == 600.0
+    assert p.key(b"=") is True and p.span == 180.0
+    assert p.key(b"+") is True and p.span == 90.0
+    assert p.key(b"\x1b[1;2C") is True and p.span == 90.0                    # an arrow: not a chord, not a zoom
+    p.zoom(1)
+    assert p.span == 45.0 and p.wave.seconds == 45.0 * TVB.STRIP_SCREENS
+
+
+def test_a_video_pane_has_no_span_and_leaves_the_zoom_keys_alone():
+    p = _player([])                                                          # a video: no strip, nothing to zoom
+    for key in (b"-", b"_", b"+", b"=", b"z", b"\x1b[45;9u"):
+        assert p.key(key) is True
+    assert p.span is None and p.wave is None
+
+
+def test_the_command_key_chords_are_read_as_zoom_and_other_keys_are_not():
+    assert TVB.zoom_chord(b"\x1b[61;9u") == 1 and TVB.zoom_chord(b"\x1b[43;9u") == 1
+    assert TVB.zoom_chord(b"\x1b[45;9u") == -1 and TVB.zoom_chord(b"\x1b[95;9u") == -1
+    assert TVB.zoom_chord(b"\x1b[45;5u") == -1                               # control, where a terminal swaps them
+    assert TVB.zoom_chord(b"\x1b[45u") == -1                                 # written as a key code, with no modifier
+    assert TVB.zoom_chord(b"\x1b[5~") == 0 and TVB.zoom_chord(b"\x1b[1;2C") == 0   # PgUp, an arrow
+    assert TVB.zoom_chord(b"a") == 0 and TVB.zoom_chord(b"\x1b[62u") == 0    # a plain key, another key code
+
+
+def test_an_unanswering_terminal_leaves_the_visualizer_in_the_fallback_colors(monkeypatch):
+    monkeypatch.setattr(TVB.os, "isatty", lambda fd: False)                  # no terminal under the tests
+    monkeypatch.setattr(TVB, "TERM_COLORS", {**TVB.TERM_COLORS, "fg": "#111111", "bg": "#222222", "red": "#333333"})
+    p = TVB.Player([dict(WAVE_ITEM)], [], paused=True, visualizer="spectrum")
+    assert p.visualizer["filter"].count("#101010") == 0                      # nothing of the fallback left in it
+    p.theme_colors()
+    assert p.visualizer["bg"] == "#222222" and "0x222222" in p.visualizer["filter"]
+    q = TVB.Player([dict(WAVE_ITEM)], [], paused=True)
+    q.theme_colors()
+    assert q.visualizer["wave"]["fg"] == "#111111" and q.visualizer["wave"]["red"] == "#333333"
+
+
+def test_apple_double_sidecars_are_not_offered_as_tracks(tmp_path):
+    (tmp_path / "mastered").mkdir()
+    for name in ("track.flac", "._track.flac", "notes.txt", "./sub/._other.mp3", "./sub/other.mp3"):
+        f = tmp_path / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+    assert [os.path.relpath(f, tmp_path) for f in TVB.media_files(str(tmp_path))] == ["track.flac", "sub/other.mp3"]

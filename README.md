@@ -7,6 +7,10 @@ fitted and centred in the pane, frame by frame if you like. Give it several file
 It is a Tern plugin plus a small player that draws through the kitty graphics protocol (frames sent by file path), so
 other terminals that implement the protocol may run the player too; it is tested in Tern only.
 
+Audio files (wav, wave, mp3, flac, ogg, oga, opus, m4a, aac, wma, aif, aiff) open in the same block and play as their
+own sound, drawn in the pane's own colors: the waveform of the whole track, a screen of it at a time, which `-` and `=`
+zoom out to the whole track and back in. One audio file is one track; give it several and they become a playlist.
+
 ## Install
 
 ```sh
@@ -33,6 +37,8 @@ tern-video-block --split right wide.mp4 tall.mp4            # a new Tern block b
 tern-video-block --tab clip.mp4                             # a new Tern tab
 tern-video-block --chapters shots.ffmeta --first-frame 61 cut.mp4
 tern-video-block --end 5 --once a.mp4 && tern-video-block --end 5 --once b.mp4   # the first 5 s of each, in turn
+tern-video-block album/*.flac                               # a playlist: waveforms of their own, n and v move through it
+tern-video-block --audio-visualizer cqt:viridis track.mp3   # another way of drawing the sound
 ```
 
 | Option | |
@@ -44,6 +50,7 @@ tern-video-block --end 5 --once a.mp4 && tern-video-block --end 5 --once b.mp4  
 | `--no-sound` | play without sound |
 | `--start S`, `--end S` | play only from S seconds in / up to S seconds in (whole frames: the first starting at or after the start, the last starting before the end) |
 | `--once` | play once and quit (the block closes) instead of looping |
+| `--audio-visualizer NAME` | how an audio file is drawn: `waveform` (the default: the whole track as a strip), `line`, `p2p`, `cline`, `envelope`, `wavespic`, `spectrum`, `spectrogram`, `cqt`, `vectorscope`, `spectrumpic`, or an ffmpeg filtergraph; a colormap may follow a name, as in `cqt:viridis` |
 
 The first file sets the frame rate, the length and the sound; the others are brought to its rate and played beside it.
 
@@ -57,10 +64,33 @@ The first file sets the frame rate, the length and the sound; the others are bro
 | PgUp PgDn | previous / next chapter (its first frame) |
 | Home, `0` | the start |
 | `1` `2` `3` | speed 0.25x / 0.5x / 1x |
+| `n` `v` | next / previous track of a playlist |
+| `o` | open another file (`fzf`, else a typed path) |
 | `m` | mute |
+| `-` `=` | zoom the waveform out (to the whole track) / in — also cmd+- and cmd+= where the terminal passes them on |
+| `z` | the whole track at once |
 | `q`, Esc | quit (the block closes) |
 
-The bottom row is a status line: play state, time, frame number, chapter, speed and the keys.
+The bottom row is a status line: play state, time, frame number, chapter, speed, the span of the waveform and the keys.
+
+## Audio
+
+An audio file plays its own sound (`mpv`, no video) with its waveform in the pane, drawn in the terminal's own colors:
+the player asks the terminal for its foreground, its background and the first seven palette colors (`OSC 10`, `11` and
+`4;N`, which Tern answers) and draws the wave in the foreground over the background, with a red playhead.
+
+The waveform is not drawn frame by frame. ffmpeg renders the track once as one long strip of waveform
+(`showwavespic`) and the pane shows a screen of it, sliding along as the sound plays: one ffmpeg call covers eight
+screens of sound, a seek is where in the strip the screen is taken from, and the whole of a track is already drawn
+however long it is, so nothing has to be decoded to zoom out to all of it. `-` and `=` step the span out and in
+(1 s … 1 h, and the track's own length), `z` shows the whole track; the status line says the span. The other
+visualizers (`--audio-visualizer spectrum`, `cqt`, `vectorscope`, …) draw the sound as it plays, a frame at a time.
+
+Several audio files are a playlist: `n` and `v` move through it, the status line gives the track number, and each
+track's waveform is rendered from its own sound.
+
+What was tried and dropped, what was in the way, and what was measured:
+[docs/audio-visualizations.md](docs/audio-visualizations.md).
 
 ## How it works
 
@@ -81,6 +111,10 @@ Things about Tern that shaped it:
 - `tern split` leaves the focus in the pane it was run from, so `--split` focuses the new block itself.
 - `tern open` on a video prints "cannot open in a file block" and exits 1 even though the plugin opens it: Tern's
   command line checks the file type before routing the open.
+- Tern binds `cmd+=` and `cmd+-` to its own font zoom, so those chords zoom the terminal rather than the pane; the
+  player's own keys are `-` and `=`. To have the chords reach the player instead, put
+  `"keybinds": {"cmd+=": "unbind", "cmd+-": "unbind"}` in `settings.json` (`"unbind"` passes the chord on to the
+  program, where an empty list would swallow it).
 
 Closing the block cleans up (the player handles SIGHUP), and ffmpeg and mpv die with the player however it dies.
 
