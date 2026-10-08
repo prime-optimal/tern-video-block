@@ -51,6 +51,7 @@ tern-video-block --audio-visualizer cqt:viridis track.mp3   # another way of dra
 | `--start S`, `--end S` | play only from S seconds in / up to S seconds in (whole frames: the first starting at or after the start, the last starting before the end) |
 | `--once` | play once and quit (the block closes) instead of looping |
 | `--audio-visualizer NAME` | how an audio file is drawn: `waveform` (the default: the whole track as a strip), `line`, `p2p`, `cline`, `envelope`, `wavespic`, `spectrum`, `spectrogram`, `cqt`, `vectorscope`, `spectrumpic`, or an ffmpeg filtergraph; a colormap may follow a name, as in `cqt:viridis` |
+| `--bookmarks FILE` | the SQLite database of bookmarks (default: the plugin's own, `bookmarks.db` in Tern's plugin data, which the block uses too) |
 
 The first file sets the frame rate, the length and the sound; the others are brought to its rate and played beside it.
 
@@ -62,6 +63,8 @@ The first file sets the frame rate, the length and the sound; the others are bro
 | ← → | 5 s back / on (shift: 1 s) |
 | `,` `.` | one frame back / on (pauses) |
 | PgUp PgDn | previous / next chapter (its first frame) |
+| `b` `B` | bookmark this moment / remove the bookmark the playhead has reached |
+| `[` `]` | previous / next bookmark (back to the start of this one first when it has played for a while) |
 | Home, `0` | the start |
 | `1` `2` `3` | speed 0.25x / 0.5x / 1x |
 | `n` `v` | next / previous track of a playlist |
@@ -92,6 +95,20 @@ track's waveform is rendered from its own sound.
 
 What was tried and dropped, what was in the way, and what was measured:
 [docs/audio-visualizations.md](docs/audio-visualizations.md).
+
+## Bookmarks
+
+`b` bookmarks the moment playing, in a video or a track. Bookmarks are not written into the file: they are rows of a
+SQLite database in the plugin's data (`~/Library/Application Support/Tern/plugin-data/video-block/bookmarks.db` on
+macOS), keyed by the file's real path, so a file keeps its bookmarks wherever it is opened from. The database is created
+by the first bookmark; until then nothing is written.
+
+A file with bookmarks gets a row under the picture: each bookmark's time (and label, when it has one), the one the
+playhead has reached highlighted, as many as fit around it. A waveform also marks them with yellow lines. A file
+without bookmarks has no row. `B` removes the highlighted bookmark, `[` and `]` jump between them.
+
+The palette's **Media: Open bookmarks** (shown once the database exists) opens it in Tern's database pane, to browse
+every file's bookmarks, or to label or delete them; the player reads them again when it opens the file.
 
 ## How it works
 
