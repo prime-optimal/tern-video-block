@@ -144,3 +144,16 @@ python3 -m pytest               # needs ffmpeg; pytest
 ```
 
 `tern plugin types .` writes `tern.d.luau`, the plugin API's types for luau-lsp.
+
+### Files
+
+- `tern_video_block.py` — the core player, playable from the terminal: probes files, decodes frames, draws them, and
+  handles the sound. Stays close to its upstream base (194ef80). Relies on mixins from `tvb_audio.py` and
+  `tvb_bookmarks.py` for audio and bookmark features.
+- `tvb_audio.py` — `AudioMixin` (the visualizer theme, the zoom, the waveform, the playlist and file picker) plus
+  `probe_audio`, `span_name`, `zoom_chord`, `media_files`, `AUDIO_EXT` and helpers; never imports the core module.
+- `tvb_vis.py` — the visualizer presets, `_visualizer`, `visualize`, `visualize_cmd`, `wave_cmd`, `_Wave`,
+  `term_colors`, `_why`, `wave_layout` and related constants; no circular imports.
+- `tvb_bookmarks.py` — the `Bookmarks` SQLite store, `BookmarksMixin` (load, add, remove, jump marks), and the
+  `current` / `row` helpers.
+- `tvb_common.py` — `PlayError`, the one exception shared by all modules.

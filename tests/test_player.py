@@ -18,6 +18,8 @@ import types
 import pytest
 
 import tern_video_block as TVB
+import tvb_audio as AUDIO
+import tvb_vis as VIS
 
 needs_ff = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
                               reason="ffmpeg / ffprobe not available")
@@ -292,20 +294,20 @@ def test_once_plays_the_range_and_then_quits_by_itself(tmp_path):
 # ---- the waveform: a strip of the whole track, a screen of it at a time, and the zoom
 
 def test_a_waveform_visualizer_is_a_strip_and_the_other_names_are_graphs():
-    wave = TVB._visualizer(None)
-    assert wave["wave"]["mode"] == TVB.WAVE_LOOK["mode"] == "cline"
-    assert wave["size"] == list(TVB.VIS_SIZE) and wave["wave"]["bg"] == TVB.TERM_COLORS["bg"]
-    assert wave["wave"]["fg"] == TVB.TERM_COLORS["fg"]                       # the theme's own colors, not a palette
-    assert wave["wave"]["red"] == TVB.TERM_COLORS["red"]
-    assert TVB._visualizer("wavespic")["wave"]["draw"] == "full"             # the wave filled in
-    assert TVB._visualizer("p2p")["wave"]["mode"] == "p2p"                   # showwaves' own modes, as strips
+    wave = VIS._visualizer(None)
+    assert wave["wave"]["mode"] == VIS.WAVE_LOOK["mode"] == "cline"
+    assert wave["size"] == list(VIS.VIS_SIZE) and wave["wave"]["bg"] == VIS.TERM_COLORS["bg"]
+    assert wave["wave"]["fg"] == VIS.TERM_COLORS["fg"]                       # the theme's own colors, not a palette
+    assert wave["wave"]["red"] == VIS.TERM_COLORS["red"]
+    assert VIS._visualizer("wavespic")["wave"]["draw"] == "full"             # the wave filled in
+    assert VIS._visualizer("p2p")["wave"]["mode"] == "p2p"                   # showwaves' own modes, as strips
     for name in ("spectrum", "spectrogram", "cqt", "vectorscope", "spectrumpic", "viridis"):
-        assert "wave" not in TVB._visualizer(name), name                     # graphs: drawn as the sound plays
-    cscheme = TVB._visualizer("cqt", {"cyan": "#ff0000", "magenta": "#00ff80"})["filter"]
+        assert "wave" not in VIS._visualizer(name), name                     # graphs: drawn as the sound plays
+    cscheme = VIS._visualizer("cqt", {"cyan": "#ff0000", "magenta": "#00ff80"})["filter"]
     assert "cscheme=1.000|0.000|0.000|0.000|1.000|0.502" in cscheme          # the theme's two colors, as showcqt wants
-    assert "{" not in TVB._visualizer("showwaves=line:s=320x200")["filter"]  # a graph of the caller's own, filled in
+    assert "{" not in VIS._visualizer("showwaves=line:s=320x200")["filter"]  # a graph of the caller's own, filled in
     with pytest.raises(TVB.PlayError, match="no quotes"):
-        TVB._visualizer("showwaves=line'")                                   # ffmpeg's graph syntax has no place for it
+        VIS._visualizer("showwaves=line'")                                   # ffmpeg's graph syntax has no place for it
 
 
 @needs_ff
@@ -314,7 +316,7 @@ def test_a_visualizer_ffmpeg_will_not_run_says_so_where_the_pane_would_be_blank(
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
                     "-c:a", "flac", str(track)], check=True)                  # ffmpeg: a name in neither list is a graph
     lay = {"w": 64, "h": 36}
-    item = TVB.visualize(TVB.probe(str(track)), lay, TVB._visualizer("nosuchviz"), 30.0)
+    item = VIS.visualize(TVB.probe(str(track)), lay, VIS._visualizer("nosuchviz"), 30.0)
     frames = TVB._Frames([item], 30.0)
     frames.start(lay, 0.0)
     try:
@@ -327,12 +329,12 @@ def test_a_visualizer_ffmpeg_will_not_run_says_so_where_the_pane_would_be_blank(
 
 
 def test_a_span_reads_as_seconds_minutes_or_the_whole_track():
-    assert TVB.span_name(45, 600) == "45 s"
-    assert TVB.span_name(90, 600) == "1m30s"
-    assert TVB.span_name(1800, 6000) == "30m"
-    assert TVB.span_name(180, 600) == "3m"
-    assert TVB.span_name(600, 600) == "the whole track"                      # the whole span is the whole track
-    assert TVB.span_name(None, 600) == "?"
+    assert AUDIO.span_name(45, 600) == "45 s"
+    assert AUDIO.span_name(90, 600) == "1m30s"
+    assert AUDIO.span_name(1800, 6000) == "30m"
+    assert AUDIO.span_name(180, 600) == "3m"
+    assert AUDIO.span_name(600, 600) == "the whole track"                      # the whole span is the whole track
+    assert AUDIO.span_name(None, 600) == "?"
 
 
 def test_a_time_reads_as_minutes_and_seconds_and_as_hours_once_the_file_reaches_an_hour():
@@ -370,17 +372,17 @@ def _fake_strip(monkeypatch, calls, fill=10):
     def cmd(item, wave, t0, t1, sw, ph):
         calls.append((t0, t1, sw, ph))
         return [sys.executable, "-c", code, str(sw), str(ph), str(fill)]
-    monkeypatch.setattr(TVB, "wave_cmd", cmd)
+    monkeypatch.setattr(VIS, "wave_cmd", cmd)
 
 
 def test_a_strip_is_drawn_once_a_screen_of_the_whole_track_and_the_playhead_moves_over_it(monkeypatch):
     calls = []
     _fake_strip(monkeypatch, calls)
-    wave = TVB._Wave({"path": "t.flac", "duration": 600.0}, TVB._visualizer(None)["wave"], 6.0, {"w": 40, "h": 6})
+    wave = VIS._Wave({"path": "t.flac", "duration": 600.0}, VIS._visualizer(None)["wave"], 6.0, {"w": 40, "h": 6})
     assert (wave.seconds, wave.count) == (48.0, 13)          # 8 screens of 6 s: a strip per 48 s of the track
     first = wave.frame(0.0)
     assert len(first) == 40 * 6 * 3 and calls == [(0.0, 48.0, 320, 6)]       # one call, whole screens of sound wide
-    red = bytes.fromhex(TVB.TERM_COLORS["red"].lstrip("#"))
+    red = bytes.fromhex(VIS.TERM_COLORS["red"].lstrip("#"))
     for r in range(6):
         assert first[r * 120:(r + 1) * 120].count(red) == 2                  # the playhead, at the left of the pane
         assert set(first[r * 120:(r + 1) * 120]) == {10, *red}               # over the strip, nothing else
@@ -394,7 +396,7 @@ def test_a_strip_is_drawn_once_a_screen_of_the_whole_track_and_the_playhead_move
 def test_a_span_of_the_whole_track_is_one_screen_one_strip_over_the_whole_of_it(monkeypatch):
     calls = []
     _fake_strip(monkeypatch, calls)
-    wave = TVB._Wave({"path": "t.flac", "duration": 600.0}, TVB._visualizer(None)["wave"], 600.0, {"w": 40, "h": 6})
+    wave = VIS._Wave({"path": "t.flac", "duration": 600.0}, VIS._visualizer(None)["wave"], 600.0, {"w": 40, "h": 6})
     assert (wave.seconds, wave.count) == (600.0, 1)
     wave.frame(0.0)
     assert calls == [(0.0, 600.0, 40, 6)]                                    # the track once, a pane wide, in one call
@@ -431,7 +433,7 @@ def _wave_player(monkeypatch, tmp_path, duration=600.0, visualizer=None):
 
 def test_a_track_opens_on_a_span_of_its_own_shown_whole_in_the_pane(monkeypatch, tmp_path):
     p, calls, out = _wave_player(monkeypatch, tmp_path)
-    assert p.span == TVB.SPAN_DEFAULT == 90.0 and isinstance(p.wave, TVB._Wave)
+    assert p.span == VIS.SPAN_DEFAULT == 90.0 and isinstance(p.wave, VIS._Wave)
     assert (p.wave.pw, p.wave.ph) == (p.lay["w"], p.lay["h"]) == (640, 360)  # the pane in pixels, above the status row
     assert p.next_frame_in() == pytest.approx(90.0 / 640)                    # a pixel of the strip: 0.14 s
     p.status(force=True)
@@ -470,7 +472,7 @@ def test_the_zoom_keys_are_the_bare_ones_and_the_command_key_chords(monkeypatch,
     assert p.key(b"+") is True and p.span == 90.0
     assert p.key(b"\x1b[1;2C") is True and p.span == 90.0                    # an arrow: not a chord, not a zoom
     p.zoom(1)
-    assert p.span == 45.0 and p.wave.seconds == 45.0 * TVB.STRIP_SCREENS
+    assert p.span == 45.0 and p.wave.seconds == 45.0 * VIS.STRIP_SCREENS
 
 
 def test_a_video_pane_has_no_span_and_leaves_the_zoom_keys_alone():
@@ -481,17 +483,17 @@ def test_a_video_pane_has_no_span_and_leaves_the_zoom_keys_alone():
 
 
 def test_the_command_key_chords_are_read_as_zoom_and_other_keys_are_not():
-    assert TVB.zoom_chord(b"\x1b[61;9u") == 1 and TVB.zoom_chord(b"\x1b[43;9u") == 1
-    assert TVB.zoom_chord(b"\x1b[45;9u") == -1 and TVB.zoom_chord(b"\x1b[95;9u") == -1
-    assert TVB.zoom_chord(b"\x1b[45;5u") == -1                               # control, where a terminal swaps them
-    assert TVB.zoom_chord(b"\x1b[45u") == -1                                 # written as a key code, with no modifier
-    assert TVB.zoom_chord(b"\x1b[5~") == 0 and TVB.zoom_chord(b"\x1b[1;2C") == 0   # PgUp, an arrow
-    assert TVB.zoom_chord(b"a") == 0 and TVB.zoom_chord(b"\x1b[62u") == 0    # a plain key, another key code
+    assert AUDIO.zoom_chord(b"\x1b[61;9u") == 1 and AUDIO.zoom_chord(b"\x1b[43;9u") == 1
+    assert AUDIO.zoom_chord(b"\x1b[45;9u") == -1 and AUDIO.zoom_chord(b"\x1b[95;9u") == -1
+    assert AUDIO.zoom_chord(b"\x1b[45;5u") == -1                               # control, where a terminal swaps them
+    assert AUDIO.zoom_chord(b"\x1b[45u") == -1                                 # written as a key code, with no modifier
+    assert AUDIO.zoom_chord(b"\x1b[5~") == 0 and AUDIO.zoom_chord(b"\x1b[1;2C") == 0   # PgUp, an arrow
+    assert AUDIO.zoom_chord(b"a") == 0 and AUDIO.zoom_chord(b"\x1b[62u") == 0    # a plain key, another key code
 
 
 def test_an_unanswering_terminal_leaves_the_visualizer_in_the_fallback_colors(monkeypatch):
     monkeypatch.setattr(TVB.os, "isatty", lambda fd: False)                  # no terminal under the tests
-    monkeypatch.setattr(TVB, "TERM_COLORS", {**TVB.TERM_COLORS, "fg": "#111111", "bg": "#222222", "red": "#333333"})
+    monkeypatch.setattr(VIS, "TERM_COLORS", {**VIS.TERM_COLORS, "fg": "#111111", "bg": "#222222", "red": "#333333"})
     p = TVB.Player([dict(WAVE_ITEM)], [], paused=True, visualizer="spectrum")
     assert p.visualizer["filter"].count("#101010") == 0                      # nothing of the fallback left in it
     p.theme_colors()
@@ -507,4 +509,4 @@ def test_apple_double_sidecars_are_not_offered_as_tracks(tmp_path):
         f = tmp_path / name
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
-    assert [os.path.relpath(f, tmp_path) for f in TVB.media_files(str(tmp_path))] == ["track.flac", "sub/other.mp3"]
+    assert [os.path.relpath(f, tmp_path) for f in AUDIO.media_files(str(tmp_path))] == ["track.flac", "sub/other.mp3"]
