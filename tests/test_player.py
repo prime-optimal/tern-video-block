@@ -332,6 +332,32 @@ def test_a_span_reads_as_seconds_minutes_or_the_whole_track():
     assert TVB.span_name(None, 600) == "?"
 
 
+def test_a_time_reads_as_minutes_and_seconds_and_as_hours_once_the_file_reaches_an_hour():
+    assert TVB.clock(275.9, 275) == "04:35"                                  # the second it is in, not rounded up
+    assert TVB.clock(0, 275) == "00:00"
+    assert TVB.clock(3599, 3599) == "59:59"
+    assert TVB.clock(65, 3600) == "00:01:05"                                  # an hour-long file: hours on both sides
+    assert TVB.clock(3725, 7200) == "01:02:05"
+    assert TVB.clock(-0.2, 275) == "00:00"
+
+
+def test_a_tracks_status_line_gives_its_time_as_a_clock_and_no_frame_number(monkeypatch, tmp_path):
+    p, _, out = _wave_player(monkeypatch, tmp_path, duration=275.0)
+    p.anchor(65.4)
+    p.status(force=True)
+    line = _status(out)
+    assert "01:05 / 04:35" in line and "frame" not in line and "- = zoom" in line
+
+
+def test_a_videos_status_line_keeps_its_frame_number_beside_the_clock():
+    p = _player([], geom={"cols": 200, "rows": 24, "cell_w": 8, "cell_h": 16})
+    out: list[str] = []
+    p.out = out.append
+    p.anchor(1.5)
+    p.status(force=True)
+    assert "00:01 / 00:10" in _status(out) and "frame 106" in _status(out)   # numbered from --first-frame 61
+
+
 def _fake_strip(monkeypatch, calls, fill=10):
     """ffmpeg as far as _Wave is concerned: draws its sw x ph of raw RGB, every pixel `fill`."""
     code = ("import sys\n"

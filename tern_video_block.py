@@ -49,7 +49,8 @@ KITTY_ID = 7311                                   # the image the player replace
 KEEP_FRAMES = 30                                  # frame files kept after showing them (the terminal may read late)
 SPEEDS = {"1": 0.25, "2": 0.5, "3": 1.0}
 KEYS = "space play/pause  \u2190\u2192 5 s  , . frame  PgUp/PgDn chapter  1 2 3 speed  m mute  q quit"
-AUDIO_KEYS = "space play/pause  \u2190\u2192 5 s  , . frame  n v track  o open  m mute  q quit"
+AUDIO_KEYS = "space play/pause  \u2190\u2192 5 s  {zoom}n v track  o open  m mute  q quit"
+ZOOM_KEYS = "- = zoom  z whole  "
 SIZE_REPORT = re.compile(rb"\x1b\[(8|6);(\d+);(\d+)t")    # the answers to CSI 18 t (rows, cols) and CSI 16 t (cell px)
 AUDIO_EXT = {".wav", ".wave", ".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wma", ".aif", ".aiff"}
 VIDEO_EXT = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".m2ts", ".mts",
@@ -156,6 +157,14 @@ def span_name(span, duration):
     if not m:
         return f"{s} s"
     return f"{m}m{s:02d}s" if s else f"{m}m"
+
+
+def clock(t, length):
+    """t as a clock: "04:35", or "01:02:10" when `length` (the file's) reaches an hour, so a time and its file's length
+    always read in the same form."""
+    h, rest = divmod(max(int(t), 0), 3600)
+    m, s = divmod(rest, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if length >= 3600 else f"{m:02d}:{s:02d}"
 
 
 CSI_U = re.compile(rb"^\x1b\[(\d+)(?:;\d+)?(?::\d+)?[u~]$")
@@ -705,9 +714,12 @@ class Player:
         speed = "" if self.speed == 1.0 else f"  {self.speed:g}x"
         track = f"  track {self.track + 1}/{len(self.tracks)}" if self.tracks and len(self.tracks) > 1 else ""
         span = f"  span {span_name(self.span, self.duration)}" if self.wave is not None else ""
-        text = (f" {icon} {t:5.2f} / {self.duration:.2f}  frame {self.first_frame + int(math.floor(t * self.fps + 1e-6))}"
-                f"  {self.chapters[k]['name'] if k >= 0 else ''}{speed}{track}{span}{self.silent_note}"
-                f"    {AUDIO_KEYS if self.tracks else KEYS}")
+        frame = "" if self.tracks else f"  frame {self.first_frame + int(math.floor(t * self.fps + 1e-6))}"
+        length = round(self.duration)
+        keys = AUDIO_KEYS.format(zoom=ZOOM_KEYS if self.wave is not None else "") if self.tracks else KEYS
+        chapter = f"  {self.chapters[k]['name']}" if k >= 0 else ""
+        text = (f" {icon} {clock(t, length)} / {clock(length, length)}{frame}{chapter}{speed}{track}{span}"
+                f"{self.silent_note}    {keys}")
         text = text[: self.geom["cols"] - 1]
         if force or text != self.last_status:
             self.out(f"\x1b[{self.geom['rows']};1H\x1b[2K\x1b[2m{text}\x1b[0m")
